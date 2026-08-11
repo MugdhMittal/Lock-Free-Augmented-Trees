@@ -1,5 +1,5 @@
 FLAGS =
-LDFLAGS =
+LDFLAGS = -latomic
 GPP = g++
 
 ### if libpapi is installed but you do not want to use it, invoke make with extra argument "has_libpapi=0"
@@ -21,7 +21,7 @@ ifneq ($(use_asan), 0)
 	LDFLAGS += -fsanitize=address -static-libasan
 endif
 
-use_asserts=0
+use_asserts=1
 ifeq ($(use_asserts), 0)
 	FLAGS += -DNDEBUG
 endif
@@ -36,7 +36,7 @@ ifeq ($(use_timelines), 1)
 	FLAGS += -DMEASURE_TIMELINE_STATS
 endif
 
-no_optimize=0
+no_optimize=1
 ifeq ($(no_optimize), 1)
 	FLAGS += -O0 -fno-inline-functions -fno-inline
 else
@@ -79,17 +79,17 @@ ifeq ($(skip_validation), 1)
 endif
 
 # FLAGS += -march=native
-FLAGS += -DMAX_THREADS_POW2=512
+FLAGS += -DMAX_THREADS_POW2=32
 FLAGS += -DCPU_FREQ_GHZ=2.1 #$(shell ./experiments/get_cpu_ghz.sh)
 FLAGS += -DMEMORY_STATS=if\(1\) -DMEMORY_STATS2=if\(0\)
-FLAGS += -std=c++17 -mcx16 -gdwarf
+FLAGS += -std=c++17 -g -mcx16 -gdwarf
 FLAGS += -fno-omit-frame-pointer
 #FLAGS += -DCALL_DEBUG_GC
 #FLAGS += -DNO_CLEANUP_AFTER_WORKLOAD ### avoid executing data structure destructors, to save teardown time at the end of each trial (useful with massive trees)
 #FLAGS += -DRAPID_RECLAMATION
 #FLAGS += -DMEASURE_REBUILDING_TIME
 #FLAGS += -DMEASURE_TIMELINE_STATS
-FLAGS += -DUSE_TREE_STATS
+# FLAGS += -DUSE_TREE_STATS
 #FLAGS += -DOVERRIDE_PRINT_STATS_ON_ERROR
 #FLAGS += -Wno-format
 FLAGS += $(xargs)
@@ -170,8 +170,28 @@ endif
 #### DECIDING WHICH COMBINATIONS OF: DATA STRUCTURE, RECLAIMER, POOL, ALLOCATOR
 #### SHOULD BE COMPILED
 ################################################################################
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_O*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_No_Alloc*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_No_Aug*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_No_CAS*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_Augmented*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_NoAlloc*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_NoCAS*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_Updated*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_DCAS*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v1*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v2*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v3*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v4*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v5*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v6*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v7*/adapter.h))
+# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_valid_Read*/adapter.h))
 
-DATA_STRUCTURES=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/*/adapter.h))
+
+
+
 RECLAIMERS=debra
 POOLS=none
 ALLOCATORS=new ## allocators are DEPRECATED (using LD_PRELOAD to load allocators instead!)
