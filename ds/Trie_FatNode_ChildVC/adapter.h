@@ -1,11 +1,11 @@
-#ifndef TRIE_v6_ADAPTER_H
-#define TRIE_v6_ADAPTER_H
+#ifndef TRIE_FatNode_ChildVC_ADAPTER_H
+#define TRIE_FatNode_ChildVC_ADAPTER_H
 
 #include <atomic>
 #include <csignal>
 #include <iostream>
 
-#include "Trie_v6.h"
+#include "Trie_FatNode_ChildVC.h"
 #include "errors.h"
 
 #ifdef USE_TREE_STATS
@@ -19,7 +19,7 @@ template <typename K, typename V>
 using node_t = Node<K, V>;
 
 #define RECORD_MANAGER_T record_manager<Reclaim, Alloc, Pool, node_t<K, V>>
-#define DATA_STRUCTURE_T Trie_v6<K, V, RECORD_MANAGER_T>
+#define DATA_STRUCTURE_T Trie_FatNode_ChildVC<K, V, RECORD_MANAGER_T>
 
 template <typename K, typename V, class Reclaim = reclaimer_debra<K>,
           class Alloc = allocator_new<K>, class Pool = pool_none<K>>
@@ -202,4 +202,4 @@ class ds_adapter {
 #undef RECORD_MANAGER_T
 #undef DATA_STRUCTURE_T
 
-#endif  // TRIE_v6_ADAPTER_H
+#endif  // TRIE_FatNode_ChildVC_ADAPTER_H

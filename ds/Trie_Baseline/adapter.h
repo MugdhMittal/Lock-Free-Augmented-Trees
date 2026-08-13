@@ -1,11 +1,11 @@
-#ifndef TRIE_v2_ADAPTER_H
-#define TRIE_v2_ADAPTER_H
+#ifndef TRIE_Baseline_ADAPTER_H
+#define TRIE_Baseline_ADAPTER_H
 
 #include <atomic>
 #include <csignal>
 #include <iostream>
 
-#include "Trie_v2.h"
+#include "Trie_Baseline.h"
 #include "errors.h"
 
 #ifdef USE_TREE_STATS
@@ -19,7 +19,7 @@ template <typename K, typename V>
 using node_t = Node<K, V>;
 
 #define RECORD_MANAGER_T record_manager<Reclaim, Alloc, Pool, node_t<K, V>>
-#define DATA_STRUCTURE_T Trie_v2<K, V, RECORD_MANAGER_T>
+#define DATA_STRUCTURE_T Trie_Baseline<K, V, RECORD_MANAGER_T>
 
 template <typename K, typename V, class Reclaim = reclaimer_debra<K>,
           class Alloc = allocator_new<K>, class Pool = pool_none<K>>
@@ -49,7 +49,7 @@ class ds_adapter {
         delete recmgr;
     }
 
-    void initThread(const int tid) { ds->initThread(tid); }
+    void initThread(const int tid)   { ds->initThread(tid); }
     void deinitThread(const int tid) { ds->deinitThread(tid); }
 
     V getNoValue() { return NO_VALUE; }
@@ -74,8 +74,8 @@ class ds_adapter {
 
     int64_t keySum() { return ds->keySum(); }
 
-    int rangeQuery(const int tid, const K& lo, const K& hi, K* const resultKeys,
-                   V* const resultValues) {
+    int rangeQuery(const int tid, const K& lo, const K& hi,
+                   K* const resultKeys, V* const resultValues) {
         return 0;  // range queries not supported
     }
 
@@ -95,8 +95,7 @@ class ds_adapter {
 
     void printObjectSizes() {
         std::cout << "sizes: node=" << sizeof(node_t<K, V>)
-                  << " version=" << sizeof(Version<K, V>)
-                  << " arrayslot=" << sizeof(ArraySlot<K, V>) << std::endl;
+                  << " version=" << sizeof(Version<K, V>) << std::endl;
     }
 
 #ifdef USE_TREE_STATS
@@ -145,33 +144,13 @@ class ds_adapter {
             return (node->left ? 1 : 0) + (node->right ? 1 : 0);
         }
 
-        // Logically present = latest VALID slot has sum == 1.
+        // v1 has no vcounter or slot array: a leaf is logically present iff
+        // its current Version has sum == 1.
         static bool isLogicallyPresent(NodePtrType node) {
             if (!node) return false;
-            Version<K, V>* v = node->version.load(std::memory_order_acquire);
-            uint64_t snap = node->vcounter.load(std::memory_order_acquire);
-
-            bool found = false;
-            int status = 0;
-            uint64_t best = 0;
-
-            while (v != nullptr) {
-                int limit = v->next_empty_slot.load(std::memory_order_acquire);
-                if (limit > ARRAY_SIZE) limit = ARRAY_SIZE;
-                for (int i = 0; i < limit; ++i) {
-                    uintptr_t tagged =
-                        v->array[i].load(std::memory_order_acquire);
-                    if (!is_valid(tagged)) continue;
-                    ArraySlot<K, V>* s = decode_ptr<K, V>(tagged);
-                    if (s->vcounter <= snap && (!found || s->vcounter > best)) {
-                        found = true;
-                        status = s->sum;
-                        best = s->vcounter;
-                    }
-                }
-                v = v->previous.load(std::memory_order_acquire);
-            }
-            return found && status == 1;
+            const Version<K, V>* v =
+                node->version.load(std::memory_order_acquire);
+            return v && v->sum == 1;
         }
 
         static size_t getNumKeys(NodePtrType node) {
@@ -202,4 +181,4 @@ class ds_adapter {
 #undef RECORD_MANAGER_T
 #undef DATA_STRUCTURE_T
 
-#endif  // TRIE_v2_ADAPTER_H
+#endif  // TRIE_Baseline_ADAPTER_H

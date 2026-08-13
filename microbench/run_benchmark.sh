@@ -3,7 +3,7 @@ set -euo pipefail
 
 # ---------------------------------------------------------------------------
 # Benchmark sweep for augmented trie variants (setbench)
-# Loops Trie_v2 .. Trie_v7 for ONE array size (compiled beforehand).
+# Loops Trie_FatNode .. Trie_FatNode_NoChain for ONE array size (compiled beforehand).
 # Prompts for array_size and csv_path interactively.
 # Comment out trie names / threads / sizes / workloads below as needed.
 # ---------------------------------------------------------------------------
@@ -15,13 +15,13 @@ CSV_PATH="${CSV_PATH:-results_benchmark.csv}"
 
 # --- Trie versions to run (comment out any you don't want this run) ---
 TRIE_NAMES=(
-    # Trie_v1
-    # Trie_v2
+    # Trie_Baseline
+    # Trie_FatNode
     # Trie_v3
     # Trie_v4
-    # Trie_v5
-    # Trie_v6
-    Trie_v7
+    # Trie_FatNode_PadFull
+    # Trie_FatNode_ChildVC
+    Trie_FatNode_NoChain
 )
 
 TRIALS=2

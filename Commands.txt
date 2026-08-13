@@ -1,8 +1,0 @@
-(Get-WmiObject -Class Win32_ComputerSystem).NumberOfLogicalProcessors
-(Get-WmiObject -Class Win32_Processor).NumberOfCores
-$mem = Get-WmiObject -Class Win32_ComputerSystem
-Write-Host ("Total RAM: {0:N1} GB" -f ($mem.TotalPhysicalMemory / 1GB))
-
-nproc
-lscpu | grep -E "^CPU\(s\)|Thread|Core|Socket"
-free -h

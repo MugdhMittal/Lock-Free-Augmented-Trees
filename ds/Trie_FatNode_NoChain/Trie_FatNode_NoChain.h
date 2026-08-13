@@ -1,5 +1,5 @@
-#ifndef TRIE_v7_H
-#define TRIE_v7_H
+#ifndef TRIE_FatNode_NoChain_H
+#define TRIE_FatNode_NoChain_H
 
 #include <stdlib.h>
 
@@ -109,9 +109,9 @@ struct Node {
 };
 
 template <typename Key, typename Value, class RecMgr>
-class Trie_v7 {
+class Trie_FatNode_NoChain {
    public:
-    Trie_v7(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
+    Trie_FatNode_NoChain(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
             Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
@@ -126,7 +126,7 @@ class Trie_v7 {
         init_versions(Root);
     }
 
-    ~Trie_v7() {
+    ~Trie_FatNode_NoChain() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -638,4 +638,4 @@ class Trie_v7 {
     }
 };
 
-#endif  // TRIE_v7_H
+#endif  // TRIE_FatNode_NoChain_H

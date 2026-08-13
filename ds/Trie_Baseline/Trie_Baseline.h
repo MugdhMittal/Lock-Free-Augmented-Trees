@@ -1,5 +1,5 @@
-#ifndef TRIE_v1_H
-#define TRIE_v1_H
+#ifndef TRIE_Baseline_H
+#define TRIE_Baseline_H
 
 #include <stdlib.h>
 
@@ -61,11 +61,11 @@ struct Node {
           version(nullptr) {}
 };
 
-// ── Trie_v1 ───────────────────────────────────────────────────────────────────
+// ── Trie_Baseline ───────────────────────────────────────────────────────────────────
 template <typename Key, typename Value, class RecMgr>
-class Trie_v1 {
+class Trie_Baseline {
    public:
-    Trie_v1(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
+    Trie_Baseline(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
             Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
@@ -81,7 +81,7 @@ class Trie_v1 {
         init_versions(Root);
     }
 
-    ~Trie_v1() {
+    ~Trie_Baseline() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -357,4 +357,4 @@ class Trie_v1 {
     }
 };
 
-#endif  // TRIE_v1_H
+#endif  // TRIE_Baseline_H

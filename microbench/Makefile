@@ -180,13 +180,13 @@ endif
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_NoCAS*/adapter.h))
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_Updated*/adapter.h))
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_DCAS*/adapter.h))
-# DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v1*/adapter.h))
-DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v2*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_Baseline*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode*/adapter.h))
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v3*/adapter.h))
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v4*/adapter.h))
-DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v5*/adapter.h))
-DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v6*/adapter.h))
-DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_v7*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_PadFull*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_ChildVC*/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_NoChain*/adapter.h))
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_valid_Read*/adapter.h))
 
 

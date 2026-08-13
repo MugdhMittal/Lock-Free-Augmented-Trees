@@ -1,5 +1,5 @@
-#ifndef TRIE_v6_H
-#define TRIE_v6_H
+#ifndef TRIE_FatNode_ChildVC_H
+#define TRIE_FatNode_ChildVC_H
 
 #include <stdlib.h>
 
@@ -106,9 +106,9 @@ struct Node {
 };
 
 template <typename Key, typename Value, class RecMgr>
-class Trie_v6 {
+class Trie_FatNode_ChildVC {
    public:
-    Trie_v6(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
+    Trie_FatNode_ChildVC(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
             Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
@@ -124,7 +124,7 @@ class Trie_v6 {
         init_versions(Root);
     }
 
-    ~Trie_v6() {
+    ~Trie_FatNode_ChildVC() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -632,4 +632,4 @@ class Trie_v6 {
     }
 };
 
-#endif  // TRIE_v6_H
+#endif  // TRIE_FatNode_ChildVC_H
