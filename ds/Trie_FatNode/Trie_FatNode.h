@@ -41,8 +41,6 @@ static inline ArraySlot<Key, Value>* decode_ptr(uintptr_t tagged) {
 
 static inline bool is_valid(uintptr_t tagged) { return (tagged & 1ULL) != 0; }
 
-inline std::atomic<size_t> num_versions_created{0};
-
 template <typename Key, typename Value>
 struct alignas(64) Version {
     std::atomic<Version<Key, Value>*> left;
@@ -59,7 +57,6 @@ struct alignas(64) Version {
             array[i].store(encode_invalid<Key, Value>(slot),
                            std::memory_order_relaxed);
         }
-        num_versions_created.fetch_add(1, std::memory_order_relaxed);
     }
 
     explicit Version(Version<Key, Value>* prev)
@@ -69,7 +66,6 @@ struct alignas(64) Version {
             array[i].store(encode_invalid<Key, Value>(slot),
                            std::memory_order_relaxed);
         }
-        num_versions_created.fetch_add(1, std::memory_order_relaxed);
     }
 
     ~Version() {
@@ -100,11 +96,27 @@ struct Node {
           vcounter(0) {}
 };
 
+#ifdef MEASURE_VERSIONS
+#define COUNT_VERSION(tid) GSTATS_ADD((tid), versions_created, 1)
+#else
+#define COUNT_VERSION(tid) ((void)(tid))
+#endif
+
+#ifdef MEASURE_PREV_TRAVERSAL
+#define FTLV_LOOKUP(tid, v, tvc) \
+    find_the_latest_version_counted((tid), (v), (tvc), true)
+#define FTLV_UPDATE(tid, v, tvc) \
+    find_the_latest_version_counted((tid), (v), (tvc), false)
+#else
+#define FTLV_LOOKUP(tid, v, tvc) find_the_latest_version((v), (tvc))
+#define FTLV_UPDATE(tid, v, tvc) find_the_latest_version((v), (tvc))
+#endif
+
 template <typename Key, typename Value, class RecMgr>
 class Trie_FatNode {
    public:
     Trie_FatNode(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
-            Key key_max, Value no_val)
+                 Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
           init(num_threads, false),
@@ -140,7 +152,7 @@ class Trie_FatNode {
 
         Version<Key, Value>* Vr = Root->version.load(std::memory_order_acquire);
         uint64_t root_vc = Root->vcounter.load(std::memory_order_acquire);
-        SlotInfo root_info = find_the_latest_version(Vr, root_vc);
+        SlotInfo root_info = FTLV_LOOKUP(tid, Vr, root_vc);
         if (!root_info.found) return NO_VALUE;
         uint64_t bound_vc = root_info.vcounter;
 
@@ -166,7 +178,7 @@ class Trie_FatNode {
                 return NO_VALUE;  // Sanity check: child version should never be
                                   // null if root's version is valid
 
-            SlotInfo child_info = find_the_latest_version(Vchild, bound_vc);
+            SlotInfo child_info = FTLV_LOOKUP(tid, Vchild, bound_vc);
             if (!child_info.found) return NO_VALUE;
 
             // Tighten the bound if the child's committed vcounter is earlier
@@ -176,7 +188,7 @@ class Trie_FatNode {
 
             Vcur = Vchild;
         }
-        SlotInfo leaf_info = find_the_latest_version(Vcur, bound_vc);
+        SlotInfo leaf_info = FTLV_LOOKUP(tid, Vcur, bound_vc);
         return (leaf_info.found && leaf_info.sum == 1) ? Leaf[idx]->value
                                                        : NO_VALUE;
     }
@@ -190,7 +202,7 @@ class Trie_FatNode {
             leaf->version.load(std::memory_order_acquire);
         uint64_t snap = leaf->vcounter.load(std::memory_order_acquire);
 
-        SlotInfo latest = find_the_latest_version(oldV, snap);
+        SlotInfo latest = FTLV_UPDATE(tid, oldV, snap);
         bool result = !latest.found || latest.sum == 0;
 
         if (result) {
@@ -220,6 +232,7 @@ class Trie_FatNode {
 
             } else {
                 Version<Key, Value>* newV = new Version<Key, Value>(oldV);
+                COUNT_VERSION(tid);
                 uintptr_t tagged =
                     newV->array[0].load(std::memory_order_relaxed);
                 ArraySlot<Key, Value>* slot = decode_ptr<Key, Value>(tagged);
@@ -242,7 +255,7 @@ class Trie_FatNode {
                 }
             }
         }
-        propagate(leaf->parent);
+        propagate(tid, leaf->parent);
         return result ? NO_VALUE : (Value)k;
     }
 
@@ -255,7 +268,7 @@ class Trie_FatNode {
             leaf->version.load(std::memory_order_acquire);
         uint64_t snap = leaf->vcounter.load(std::memory_order_acquire);
 
-        SlotInfo latest = find_the_latest_version(oldV, snap);
+        SlotInfo latest = FTLV_UPDATE(tid, oldV, snap);
         bool result = latest.found && latest.sum == 1;
 
         if (result) {
@@ -283,6 +296,7 @@ class Trie_FatNode {
 
             } else {
                 Version<Key, Value>* newV = new Version<Key, Value>(oldV);
+                COUNT_VERSION(tid);
                 uintptr_t tagged =
                     newV->array[0].load(std::memory_order_relaxed);
                 ArraySlot<Key, Value>* slot = decode_ptr<Key, Value>(tagged);
@@ -305,7 +319,7 @@ class Trie_FatNode {
                 }
             }
         }
-        propagate(leaf->parent);
+        propagate(tid, leaf->parent);
         return result ? (Value)k : NO_VALUE;
     }
 
@@ -394,9 +408,9 @@ class Trie_FatNode {
 
         if (node->left && node->right) {
             v->left.store(node->left->version.load(std::memory_order_relaxed),
-                         std::memory_order_relaxed);
-            v->right.store(node->right->version.load(std::memory_order_relaxed),
                           std::memory_order_relaxed);
+            v->right.store(node->right->version.load(std::memory_order_relaxed),
+                           std::memory_order_relaxed);
         }
 
         // slot 0 as VALID with sum=0, vcounter=0.
@@ -465,7 +479,53 @@ class Trie_FatNode {
         return latest;
     }
 
-    bool refresh(Node<Key, Value>* x, int mySlotAtVx, Version<Key, Value>* Vx) {
+#ifdef MEASURE_PREV_TRAVERSAL
+    SlotInfo find_the_latest_version_counted(const int tid,
+                                             Version<Key, Value>* start_v,
+                                             uint64_t target_vc, bool lookup) {
+        if (lookup)
+            GSTATS_ADD(tid, find_ftlv_calls, 1);
+        else
+            GSTATS_ADD(tid, upd_ftlv_calls, 1);
+        SlotInfo latest;
+        Version<Key, Value>* v = start_v;
+
+        while (v != nullptr) {
+            int limit = v->next_empty_slot.load(std::memory_order_acquire);
+            if (limit > ARRAY_SIZE) limit = ARRAY_SIZE;
+
+            for (int i = 0; i < limit; ++i) {
+                uintptr_t tagged = v->array[i].load(std::memory_order_acquire);
+                if (!is_valid(tagged)) continue;
+
+                ArraySlot<Key, Value>* slot = decode_ptr<Key, Value>(tagged);
+                uint64_t vc = slot->vcounter;
+
+                if (vc <= target_vc) {
+                    if (!latest.found || vc > latest.vcounter) {
+                        latest.found = true;
+                        latest.sum = slot->sum;
+                        latest.vcounter = vc;
+                    }
+                }
+            }
+
+            if (latest.found && latest.vcounter == target_vc) return latest;
+
+            v = v->previous.load(std::memory_order_acquire);
+            if (v != nullptr) {
+                if (lookup)
+                    GSTATS_ADD(tid, find_prev_entries, 1);
+                else
+                    GSTATS_ADD(tid, upd_prev_entries, 1);
+            }
+        }
+        return latest;
+    }
+#endif
+
+    bool refresh(const int tid, Node<Key, Value>* x, int mySlotAtVx,
+                 Version<Key, Value>* Vx) {
         if (!x || !x->left || !x->right) return true;
         uint64_t vcounter1 = x->vcounter.load(std::memory_order_acquire);
 
@@ -473,22 +533,24 @@ class Trie_FatNode {
             uint64_t vcl = x->left->vcounter.load(std::memory_order_acquire);
             uint64_t vcr = x->right->vcounter.load(std::memory_order_acquire);
 
-            Version<Key, Value>* curLeft = Vx->left.load(std::memory_order_acquire);
+            Version<Key, Value>* curLeft =
+                Vx->left.load(std::memory_order_acquire);
             Version<Key, Value>* freshLeft =
                 x->left->version.load(std::memory_order_acquire);
             if (curLeft != freshLeft) {
                 Vx->left.store(freshLeft, std::memory_order_release);
             }
-            Version<Key, Value>* curRight = Vx->right.load(std::memory_order_acquire);
+            Version<Key, Value>* curRight =
+                Vx->right.load(std::memory_order_acquire);
             Version<Key, Value>* freshRight =
                 x->right->version.load(std::memory_order_acquire);
             if (curRight != freshRight) {
                 Vx->right.store(freshRight, std::memory_order_release);
             }
 
-            SlotInfo sl = find_the_latest_version(
+            SlotInfo sl = FTLV_UPDATE(tid,
                 x->left->version.load(std::memory_order_acquire), vcl);
-            SlotInfo sr = find_the_latest_version(
+            SlotInfo sr = FTLV_UPDATE(tid,
                 x->right->version.load(std::memory_order_acquire), vcr);
 
             int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
@@ -514,14 +576,15 @@ class Trie_FatNode {
         // ── Overflow path
         uint64_t vcl = x->left->vcounter.load(std::memory_order_acquire);
         uint64_t vcr = x->right->vcounter.load(std::memory_order_acquire);
-        SlotInfo sl = find_the_latest_version(
+        SlotInfo sl = FTLV_UPDATE(tid,
             x->left->version.load(std::memory_order_acquire), vcl);
-        SlotInfo sr = find_the_latest_version(
+        SlotInfo sr = FTLV_UPDATE(tid,
             x->right->version.load(std::memory_order_acquire), vcr);
 
         int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
         auto* newV = new Version<Key, Value>(Vx);
+        COUNT_VERSION(tid);
         newV->left.store(x->left->version.load(std::memory_order_acquire),
                          std::memory_order_relaxed);
         newV->right.store(x->right->version.load(std::memory_order_acquire),
@@ -552,18 +615,18 @@ class Trie_FatNode {
         }
     }
 
-    void propagate(Node<Key, Value>* x) {
+    void propagate(const int tid, Node<Key, Value>* x) {
         while (x != nullptr) {
             Version<Key, Value>* Vx =
                 x->version.load(std::memory_order_acquire);
             int mySlotAtVx =
                 Vx->next_empty_slot.fetch_add(1, std::memory_order_acq_rel);
 
-            if (!refresh(x, mySlotAtVx, Vx)) {
+            if (!refresh(tid, x, mySlotAtVx, Vx)) {
                 Vx = x->version.load(std::memory_order_acquire);
                 mySlotAtVx =
                     Vx->next_empty_slot.fetch_add(1, std::memory_order_acq_rel);
-                refresh(x, mySlotAtVx, Vx);
+                refresh(tid, x, mySlotAtVx, Vx);
             }
             x = x->parent;
         }
@@ -621,4 +684,10 @@ class Trie_FatNode {
     }
 };
 
+#ifdef MEASURE_PREV_TRAVERSAL
+#undef FTLV_LOOKUP
+#undef FTLV_UPDATE
+#endif
+
+#undef COUNT_VERSION
 #endif  // TRIE_FatNode_H

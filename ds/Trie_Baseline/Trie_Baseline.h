@@ -13,39 +13,35 @@
 #include "errors.h"
 #include "record_manager.h"
 
-inline std::atomic<size_t> num_versions_created{0};
-
-// ── Version ───────────────────────────────────────────────────────────────────
-// Immutable path-copied node.  Left/right are plain (non-atomic) pointers
-// because a Version is never mutated after publication.
-// keyValue is only meaningful at leaves (sum == 1).
+// ── Version
+// ─────────────────────────────────────────────────────────────────── Immutable
+// path-copied node.  Left/right are plain (non-atomic) pointers because a
+// Version is never mutated after publication. keyValue is only meaningful at
+// leaves (sum == 1).
 template <typename Key, typename Value>
 struct alignas(64) Version {
     const Version<Key, Value>* left;
     const Version<Key, Value>* right;
-    const int  sum;       // aggregate key count in this subtree
-    const Key  keyValue;  // actual key stored at leaf (only valid when sum==1)
+    const int sum;       // aggregate key count in this subtree
+    const Key keyValue;  // actual key stored at leaf (only valid when sum==1)
 
     // Leaf constructor
     Version(int leafBit, Key key = Key{})
-        : left(nullptr), right(nullptr), sum(leafBit), keyValue(key) {
-        num_versions_created.fetch_add(1, std::memory_order_relaxed);
-    }
+        : left(nullptr), right(nullptr), sum(leafBit), keyValue(key) {}
 
     // Internal-node constructor
     Version(const Version<Key, Value>* L, const Version<Key, Value>* R)
         : left(L),
           right(R),
           sum((L ? L->sum : 0) + (R ? R->sum : 0)),
-          keyValue(Key{}) {
-        num_versions_created.fetch_add(1, std::memory_order_relaxed);
-    }
+          keyValue(Key{}) {}
 };
 
-// ── Node ──────────────────────────────────────────────────────────────────────
+// ── Node
+// ──────────────────────────────────────────────────────────────────────
 template <typename Key, typename Value>
 struct Node {
-    Key   key;
+    Key key;
     Value value;
     Node<Key, Value>* left;
     Node<Key, Value>* right;
@@ -61,12 +57,19 @@ struct Node {
           version(nullptr) {}
 };
 
-// ── Trie_Baseline ───────────────────────────────────────────────────────────────────
+// ── Trie_Baseline
+// ───────────────────────────────────────────────────────────────────
+
+#ifdef MEASURE_VERSIONS
+#define COUNT_VERSION(tid) GSTATS_ADD((tid), versions_created, 1)
+#else
+#define COUNT_VERSION(tid) ((void)(tid))
+#endif
 template <typename Key, typename Value, class RecMgr>
 class Trie_Baseline {
    public:
     Trie_Baseline(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
-            Key key_max, Value no_val)
+                  Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
           init(num_threads, false),
@@ -130,9 +133,9 @@ class Trie_Baseline {
         if (result) {
             leaf->value = val;
             auto* newV = new Version<Key, Value>(1, k);
+            COUNT_VERSION(tid);
             if (leaf->version.compare_exchange_strong(
-                    oldV, newV,
-                    std::memory_order_acq_rel,
+                    oldV, newV, std::memory_order_acq_rel,
                     std::memory_order_relaxed)) {
                 result = true;
             } else {
@@ -141,7 +144,7 @@ class Trie_Baseline {
             }
         }
 
-        propagate(leaf->parent);
+        propagate(tid, leaf->parent);
         return result ? NO_VALUE : (Value)k;
     }
 
@@ -157,9 +160,9 @@ class Trie_Baseline {
 
         if (result) {
             auto* newV = new Version<Key, Value>(0, Key{});
+            COUNT_VERSION(tid);
             if (leaf->version.compare_exchange_strong(
-                    oldV, newV,
-                    std::memory_order_acq_rel,
+                    oldV, newV, std::memory_order_acq_rel,
                     std::memory_order_relaxed)) {
                 result = true;
             } else {
@@ -168,12 +171,13 @@ class Trie_Baseline {
             }
         }
 
-        propagate(leaf->parent);
+        propagate(tid, leaf->parent);
         return result ? (Value)k : NO_VALUE;
     }
 
     // ── size ─────────────────────────────────────────────────────────────────
-    // Matches v3 convention: returns the sum of present key values, not a count.
+    // Matches v3 convention: returns the sum of present key values, not a
+    // count.
     int size(const int tid) {
         int keysum = 0;
         for (size_t i = 0; i < N; ++i) {
@@ -205,27 +209,26 @@ class Trie_Baseline {
     bool validateStructure() { return validate_node(Root); }
 
     // ── accessors ────────────────────────────────────────────────────────────
-    RecMgr*            debugGetRecMgr() { return recmgr; }
-    Node<Key, Value>*  get_root()       { return Root; }
-    const Key&         get_key_min()    { return KEY_MIN; }
-    const Key&         get_key_max()    { return KEY_MAX; }
+    RecMgr* debugGetRecMgr() { return recmgr; }
+    Node<Key, Value>* get_root() { return Root; }
+    const Key& get_key_min() { return KEY_MIN; }
+    const Key& get_key_max() { return KEY_MAX; }
 
    private:
-    RecMgr*            recmgr;
-    Node<Key, Value>*  Root;
-    std::vector<bool>  init;
-    const Key          KEY_MIN;
-    const Key          KEY_MAX;
-    const size_t       N;
-    int                LOG_N;
+    RecMgr* recmgr;
+    Node<Key, Value>* Root;
+    std::vector<bool> init;
+    const Key KEY_MIN;
+    const Key KEY_MAX;
+    const size_t N;
+    int LOG_N;
     Node<Key, Value>** Leaf;
-    const Value        NO_VALUE;
+    const Value NO_VALUE;
 
     // ── build_tree ───────────────────────────────────────────────────────────
     // Range-split identical to v3.  Internal nodes get key=-1 as a sentinel;
     // leaves get their actual key assigned here.
-    Node<Key, Value>* build_tree(size_t l, size_t r,
-                                  Node<Key, Value>* parent) {
+    Node<Key, Value>* build_tree(size_t l, size_t r, Node<Key, Value>* parent) {
         auto* node = new Node<Key, Value>(static_cast<Key>(-1));
         node->parent = parent;
 
@@ -236,8 +239,8 @@ class Trie_Baseline {
         }
 
         size_t mid = l + (r - l) / 2;
-        node->left  = build_tree(l,       mid, node);
-        node->right = build_tree(mid + 1, r,   node);
+        node->left = build_tree(l, mid, node);
+        node->right = build_tree(mid + 1, r, node);
         return node;
     }
 
@@ -248,21 +251,23 @@ class Trie_Baseline {
     void init_versions(Node<Key, Value>* node) {
         if (!node) return;
 
-        if (node->left)  init_versions(node->left);
+        if (node->left) init_versions(node->left);
         if (node->right) init_versions(node->right);
 
         Version<Key, Value>* v;
         if (!node->left && !node->right) {
             // Leaf: sum=0, no key stored yet.
             v = new Version<Key, Value>(0, node->key);
+
         } else {
             // Internal node: snapshot children's current versions.
             const Version<Key, Value>* vl =
-                node->left  ? node->left->version.load(std::memory_order_relaxed)
-                            : nullptr;
+                node->left ? node->left->version.load(std::memory_order_relaxed)
+                           : nullptr;
             const Version<Key, Value>* vr =
-                node->right ? node->right->version.load(std::memory_order_relaxed)
-                            : nullptr;
+                node->right
+                    ? node->right->version.load(std::memory_order_relaxed)
+                    : nullptr;
             v = new Version<Key, Value>(vl, vr);
         }
 
@@ -289,7 +294,7 @@ class Trie_Baseline {
     // ── refresh ──────────────────────────────────────────────────────────────
     // Pure path-copying: read left/right child versions, CAS a new aggregate
     // Version onto node.  No slot arrays, no vcounters.
-    bool refresh(Node<Key, Value>* node) {
+    bool refresh(const int tid, Node<Key, Value>* node) {
         if (!node || !node->left || !node->right) return true;
 
         const Version<Key, Value>* oldV =
@@ -300,11 +305,11 @@ class Trie_Baseline {
             node->right->version.load(std::memory_order_acquire);
 
         auto* newV = new Version<Key, Value>(vl, vr);
+        COUNT_VERSION(tid);
 
-        if (node->version.compare_exchange_strong(
-                oldV, newV,
-                std::memory_order_acq_rel,
-                std::memory_order_relaxed)) {
+        if (node->version.compare_exchange_strong(oldV, newV,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_relaxed)) {
             return true;
         }
         delete newV;
@@ -312,9 +317,9 @@ class Trie_Baseline {
     }
 
     // ── propagate ────────────────────────────────────────────────────────────
-    void propagate(Node<Key, Value>* x) {
+    void propagate(const int tid, Node<Key, Value>* x) {
         while (x != nullptr) {
-            if (!refresh(x)) refresh(x);
+            if (!refresh(tid, x)) refresh(tid, x);
             x = x->parent;
         }
     }
@@ -338,7 +343,7 @@ class Trie_Baseline {
             node->version.load(std::memory_order_acquire);
         if (!v) return false;
 
-        int left_sum  = 0;
+        int left_sum = 0;
         int right_sum = 0;
         if (node->left) {
             const Version<Key, Value>* vl =
@@ -356,5 +361,5 @@ class Trie_Baseline {
         return validate_node(node->left) && validate_node(node->right);
     }
 };
-
+#undef COUNT_VERSION
 #endif  // TRIE_Baseline_H

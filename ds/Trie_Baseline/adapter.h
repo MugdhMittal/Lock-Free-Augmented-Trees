@@ -49,7 +49,7 @@ class ds_adapter {
         delete recmgr;
     }
 
-    void initThread(const int tid)   { ds->initThread(tid); }
+    void initThread(const int tid) { ds->initThread(tid); }
     void deinitThread(const int tid) { ds->deinitThread(tid); }
 
     V getNoValue() { return NO_VALUE; }
@@ -74,15 +74,18 @@ class ds_adapter {
 
     int64_t keySum() { return ds->keySum(); }
 
-    int rangeQuery(const int tid, const K& lo, const K& hi,
-                   K* const resultKeys, V* const resultValues) {
+    int rangeQuery(const int tid, const K& lo, const K& hi, K* const resultKeys,
+                   V* const resultValues) {
         return 0;  // range queries not supported
     }
 
     void printSummary() {
         recmgr->printStatus();
-        printf("Total versions created = %zu\n", num_versions_created.load());
-        num_versions_created.store(0);
+
+#ifdef MEASURE_VERSIONS
+        printf("Total versions created = %lld\n",
+               GSTATS_GET_STAT_METRICS(versions_created, TOTAL)[0].sum);
+#endif
 
 #ifdef USE_TREE_STATS
         auto stats = createTreeStats(KEY_MIN, KEY_MAX);

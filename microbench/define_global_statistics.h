@@ -57,6 +57,26 @@
     gstats_handle_stat(LONG_LONG, duration_all_ops, 1, { /* note: used by brown_ext_ist_lf */ \
             gstats_output_item(PRINT_RAW, SUM, TOTAL) \
     }) \
+    gstats_handle_stat(LONG_LONG, versions_created, 1, { \
+            gstats_output_item(PRINT_RAW, SUM, BY_THREAD) \
+      __AND gstats_output_item(PRINT_RAW, SUM, TOTAL) \
+    }) \
+    gstats_handle_stat(LONG_LONG, find_prev_entries, 1, { \
+            gstats_output_item(PRINT_RAW, SUM, BY_THREAD) \
+      __AND gstats_output_item(PRINT_RAW, SUM, TOTAL) \
+    }) \
+    gstats_handle_stat(LONG_LONG, find_ftlv_calls, 1, { \
+            gstats_output_item(PRINT_RAW, SUM, BY_THREAD) \
+      __AND gstats_output_item(PRINT_RAW, SUM, TOTAL) \
+    }) \
+    gstats_handle_stat(LONG_LONG, upd_prev_entries, 1, { \
+            gstats_output_item(PRINT_RAW, SUM, BY_THREAD) \
+      __AND gstats_output_item(PRINT_RAW, SUM, TOTAL) \
+    }) \
+    gstats_handle_stat(LONG_LONG, upd_ftlv_calls, 1, { \
+            gstats_output_item(PRINT_RAW, SUM, BY_THREAD) \
+      __AND gstats_output_item(PRINT_RAW, SUM, TOTAL) \
+    }) \
 
 #endif /* GSTATS_OUTPUT_DEFS_H */
 

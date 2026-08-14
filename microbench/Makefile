@@ -78,6 +78,16 @@ ifeq ($(skip_validation), 1)
 	FLAGS += -DSKIP_VALIDATION
 endif
 
+measure_versions=0
+ifeq ($(measure_versions), 1)
+	FLAGS += -DMEASURE_VERSIONS
+endif
+
+measure_prev=0
+ifeq ($(measure_prev), 1)
+	FLAGS += -DMEASURE_PREV_TRAVERSAL
+endif
+
 # FLAGS += -march=native
 FLAGS += -DMAX_THREADS_POW2=32
 FLAGS += -DCPU_FREQ_GHZ=2.1 #$(shell ./experiments/get_cpu_ghz.sh)

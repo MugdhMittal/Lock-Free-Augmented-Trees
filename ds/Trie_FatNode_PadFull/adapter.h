@@ -81,9 +81,10 @@ class ds_adapter {
 
     void printSummary() {
         recmgr->printStatus();
-        printf("Total versions created = %zu\n",
-               num_versions_created.value.load());
-        num_versions_created.value.store(0);
+#ifdef MEASURE_VERSIONS
+        printf("Total versions created = %lld\n",
+               GSTATS_GET_STAT_METRICS(versions_created, TOTAL)[0].sum);
+#endif
 
 #ifdef USE_TREE_STATS
         auto stats = createTreeStats(KEY_MIN, KEY_MAX);
