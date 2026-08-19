@@ -1,5 +1,5 @@
-#ifndef TRIE_FatNode_H
-#define TRIE_FatNode_H
+#ifndef TRIE_FatNode_ChildVC_PadSlot_H
+#define TRIE_FatNode_ChildVC_PadSlot_H
 
 #include <stdlib.h>
 
@@ -17,12 +17,19 @@ static const int ARRAY_SIZE = 500;  // slots per Version node
 
 template <typename Key, typename Value>
 struct ArraySlot {
-    int sum;
-    uint64_t vcounter;
-
-    ArraySlot() : sum(0), vcounter(0) {}
-    ArraySlot(int s, uint64_t vc) : sum(s), vcounter(vc) {}
+    int sum;                             // 4B
+    char _pad0[4];                       // 4B
+    uint64_t vcounter;                   // 8B
+    uint64_t left_vcounter;              // 8B
+    uint64_t right_vcounter;             // 8B
+    char _pad1[64 - 4 - 4 - 8 - 8 - 8];  // 32B  → total 64B
+    ArraySlot() : sum(0), vcounter(0), left_vcounter(0), right_vcounter(0) {}
+    ArraySlot(int s, uint64_t vc)
+        : sum(s), vcounter(vc), left_vcounter(0), right_vcounter(0) {}
+    ArraySlot(int s, uint64_t vc, uint64_t lvc, uint64_t rvc)
+        : sum(s), vcounter(vc), left_vcounter(lvc), right_vcounter(rvc) {}
 };
+static_assert(sizeof(ArraySlot<int, int>) == 64, "ArraySlot must be 64 bytes");
 
 template <typename Key, typename Value>
 static inline uintptr_t encode_invalid(ArraySlot<Key, Value>* slot) {
@@ -113,10 +120,10 @@ struct Node {
 #endif
 
 template <typename Key, typename Value, class RecMgr>
-class Trie_FatNode {
+class Trie_FatNode_ChildVC_PadSlot {
    public:
-    Trie_FatNode(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
-                 Key key_max, Value no_val)
+    Trie_FatNode_ChildVC_PadSlot(RecMgr* recmgr_, int num_threads, size_t N_,
+                                 Key key_min, Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
           init(num_threads, false),
@@ -124,13 +131,14 @@ class Trie_FatNode {
           KEY_MAX(key_max),
           N(N_),
           NO_VALUE(no_val) {
+        LOG_N = static_cast<int>(std::ceil(std::log2(static_cast<double>(N))));
         Leaf = new Node<Key, Value>*[N];
         for (size_t i = 0; i < N; ++i) Leaf[i] = nullptr;
         Root = build_tree(0, N - 1, nullptr);
         init_versions(Root);
     }
 
-    ~Trie_FatNode() {
+    ~Trie_FatNode_ChildVC_PadSlot() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -149,48 +157,37 @@ class Trie_FatNode {
 
     Value find(const int tid, Key k) {
         if (k < KEY_MIN || k > KEY_MAX) return NO_VALUE;
+        size_t idx = k - KEY_MIN;
 
-        Version<Key, Value>* Vr = Root->version.load(std::memory_order_acquire);
-        uint64_t root_vc = Root->vcounter.load(std::memory_order_acquire);
-        SlotInfo root_info = FTLV_LOOKUP(tid, Vr, root_vc);
-        if (!root_info.found) return NO_VALUE;
-        uint64_t bound_vc = root_info.vcounter;
+        // Read the parent's (Root's) own version and its own timestamp.
+        Version<Key, Value>* v = Root->version.load(std::memory_order_acquire);
+        uint64_t own_ts = Root->vcounter.load(std::memory_order_acquire);
 
-        Version<Key, Value>* Vcur = Vr;
-        size_t idx = (size_t)(k - KEY_MIN);  // target leaf index [0, N-1]
-        size_t l = 0, r = N - 1;
+        SlotInfo parent_slot = FTLV_LOOKUP(tid, v, own_ts);
+        if (!parent_slot.found) return NO_VALUE;
+        if (parent_slot.sum == 0) return NO_VALUE;  // empty subtree, stop here
 
-        while (l < r) {
-            size_t mid = l + (r - l) / 2;
+        for (int i = 0; i < LOG_N; ++i) {
+            if (v == nullptr) return NO_VALUE;
+            int bit = (idx >> (LOG_N - 1 - i)) & 1;
 
-            Version<Key, Value>* Vchild;
-            if (idx <= mid) {
-                // go left
-                Vchild = Vcur->left.load(std::memory_order_acquire);
-                r = mid;
-            } else {
-                // go right
-                Vchild = Vcur->right.load(std::memory_order_acquire);
-                l = mid + 1;
-            }
+            // Go down a level, same as v1's descent.
+            v = (bit == 0) ? v->left.load(std::memory_order_acquire)
+                           : v->right.load(std::memory_order_acquire);
+            if (v == nullptr) return NO_VALUE;
 
-            if (!Vchild)
-                return NO_VALUE;  // Sanity check: child version should never be
-                                  // null if root's version is valid
+            // Use the SAME timestamp for this branch that the parent had
+            // stored for it.
+            uint64_t child_ts = (bit == 0) ? parent_slot.left_vcounter
+                                           : parent_slot.right_vcounter;
 
-            SlotInfo child_info = FTLV_LOOKUP(tid, Vchild, bound_vc);
-            if (!child_info.found) return NO_VALUE;
-
-            // Tighten the bound if the child's committed vcounter is earlier
-            if (child_info.vcounter < bound_vc) {
-                bound_vc = child_info.vcounter;
-            }
-
-            Vcur = Vchild;
+            parent_slot = FTLV_LOOKUP(tid, v, child_ts);
+            if (!parent_slot.found) return NO_VALUE;
+            if (parent_slot.sum == 0)
+                return NO_VALUE;  // empty subtree, stop here
         }
-        SlotInfo leaf_info = FTLV_LOOKUP(tid, Vcur, bound_vc);
-        return (leaf_info.found && leaf_info.sum == 1) ? Leaf[idx]->value
-                                                       : NO_VALUE;
+
+        return (parent_slot.sum > 0) ? Leaf[idx]->value : NO_VALUE;
     }
 
     Value insertIfAbsent(const int tid, Key k, Value val) {
@@ -370,7 +367,14 @@ class Trie_FatNode {
         bool found;
         int sum;
         uint64_t vcounter;
-        SlotInfo() : found(false), sum(0), vcounter(0) {}
+        uint64_t left_vcounter;
+        uint64_t right_vcounter;
+        SlotInfo()
+            : found(false),
+              sum(0),
+              vcounter(0),
+              left_vcounter(0),
+              right_vcounter(0) {}
     };
 
     RecMgr* recmgr;
@@ -379,6 +383,7 @@ class Trie_FatNode {
     const Key KEY_MIN;
     const Key KEY_MAX;
     const size_t N;
+    int LOG_N;
     Node<Key, Value>** Leaf;
     const Value NO_VALUE;
 
@@ -463,6 +468,8 @@ class Trie_FatNode {
                         latest.found = true;
                         latest.sum = slot->sum;
                         latest.vcounter = vc;
+                        latest.left_vcounter = slot->left_vcounter;
+                        latest.right_vcounter = slot->right_vcounter;
                     }
                 }
             }
@@ -506,6 +513,8 @@ class Trie_FatNode {
                         latest.found = true;
                         latest.sum = slot->sum;
                         latest.vcounter = vc;
+                        latest.left_vcounter = slot->left_vcounter;
+                        latest.right_vcounter = slot->right_vcounter;
                     }
                 }
             }
@@ -548,10 +557,10 @@ class Trie_FatNode {
                 Vx->right.store(freshRight, std::memory_order_release);
             }
 
-            SlotInfo sl = FTLV_UPDATE(tid,
-                x->left->version.load(std::memory_order_acquire), vcl);
-            SlotInfo sr = FTLV_UPDATE(tid,
-                x->right->version.load(std::memory_order_acquire), vcr);
+            SlotInfo sl = FTLV_UPDATE(
+                tid, x->left->version.load(std::memory_order_acquire), vcl);
+            SlotInfo sr = FTLV_UPDATE(
+                tid, x->right->version.load(std::memory_order_acquire), vcr);
 
             int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
@@ -560,6 +569,8 @@ class Trie_FatNode {
             ArraySlot<Key, Value>* slot = decode_ptr<Key, Value>(tagged);
             slot->sum = new_sum;
             slot->vcounter = vcounter1 + 1;
+            slot->left_vcounter = sl.vcounter;
+            slot->right_vcounter = sr.vcounter;
 
             uint64_t expected_vc = vcounter1;
             // The slot should be currently invalid.
@@ -576,10 +587,10 @@ class Trie_FatNode {
         // ── Overflow path
         uint64_t vcl = x->left->vcounter.load(std::memory_order_acquire);
         uint64_t vcr = x->right->vcounter.load(std::memory_order_acquire);
-        SlotInfo sl = FTLV_UPDATE(tid,
-            x->left->version.load(std::memory_order_acquire), vcl);
-        SlotInfo sr = FTLV_UPDATE(tid,
-            x->right->version.load(std::memory_order_acquire), vcr);
+        SlotInfo sl = FTLV_UPDATE(
+            tid, x->left->version.load(std::memory_order_acquire), vcl);
+        SlotInfo sr = FTLV_UPDATE(
+            tid, x->right->version.load(std::memory_order_acquire), vcr);
 
         int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
@@ -593,6 +604,8 @@ class Trie_FatNode {
         ArraySlot<Key, Value>* slot = decode_ptr<Key, Value>(tagged);
         slot->sum = new_sum;
         slot->vcounter = vcounter1 + 1;
+        slot->left_vcounter = sl.vcounter;
+        slot->right_vcounter = sr.vcounter;
         newV->next_empty_slot.fetch_add(1, std::memory_order_relaxed);
 
         Version<Key, Value>* expected_v = Vx;
@@ -690,4 +703,4 @@ class Trie_FatNode {
 #endif
 
 #undef COUNT_VERSION
-#endif  // TRIE_FatNode_H
+#endif  // TRIE_FatNode_ChildVC_PadSlot_H

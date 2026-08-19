@@ -1,5 +1,5 @@
-#ifndef TRIE_FatNode_H
-#define TRIE_FatNode_H
+#ifndef TRIE_FatNode_PadSlot_H
+#define TRIE_FatNode_PadSlot_H
 
 #include <stdlib.h>
 
@@ -17,12 +17,14 @@ static const int ARRAY_SIZE = 500;  // slots per Version node
 
 template <typename Key, typename Value>
 struct ArraySlot {
-    int sum;
-    uint64_t vcounter;
-
+    int sum;                     // 4B
+    char _pad0[4];               // 4B
+    uint64_t vcounter;           // 8B
+    char _pad1[64 - 4 - 4 - 8];  // 48B  → total 64B
     ArraySlot() : sum(0), vcounter(0) {}
     ArraySlot(int s, uint64_t vc) : sum(s), vcounter(vc) {}
 };
+static_assert(sizeof(ArraySlot<int, int>) == 64, "ArraySlot must be 64 bytes");
 
 template <typename Key, typename Value>
 static inline uintptr_t encode_invalid(ArraySlot<Key, Value>* slot) {
@@ -113,10 +115,10 @@ struct Node {
 #endif
 
 template <typename Key, typename Value, class RecMgr>
-class Trie_FatNode {
+class Trie_FatNode_PadSlot {
    public:
-    Trie_FatNode(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
-                 Key key_max, Value no_val)
+    Trie_FatNode_PadSlot(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
+                         Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
           init(num_threads, false),
@@ -130,7 +132,7 @@ class Trie_FatNode {
         init_versions(Root);
     }
 
-    ~Trie_FatNode() {
+    ~Trie_FatNode_PadSlot() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -548,10 +550,10 @@ class Trie_FatNode {
                 Vx->right.store(freshRight, std::memory_order_release);
             }
 
-            SlotInfo sl = FTLV_UPDATE(tid,
-                x->left->version.load(std::memory_order_acquire), vcl);
-            SlotInfo sr = FTLV_UPDATE(tid,
-                x->right->version.load(std::memory_order_acquire), vcr);
+            SlotInfo sl = FTLV_UPDATE(
+                tid, x->left->version.load(std::memory_order_acquire), vcl);
+            SlotInfo sr = FTLV_UPDATE(
+                tid, x->right->version.load(std::memory_order_acquire), vcr);
 
             int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
@@ -576,10 +578,10 @@ class Trie_FatNode {
         // ── Overflow path
         uint64_t vcl = x->left->vcounter.load(std::memory_order_acquire);
         uint64_t vcr = x->right->vcounter.load(std::memory_order_acquire);
-        SlotInfo sl = FTLV_UPDATE(tid,
-            x->left->version.load(std::memory_order_acquire), vcl);
-        SlotInfo sr = FTLV_UPDATE(tid,
-            x->right->version.load(std::memory_order_acquire), vcr);
+        SlotInfo sl = FTLV_UPDATE(
+            tid, x->left->version.load(std::memory_order_acquire), vcl);
+        SlotInfo sr = FTLV_UPDATE(
+            tid, x->right->version.load(std::memory_order_acquire), vcr);
 
         int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
@@ -690,4 +692,4 @@ class Trie_FatNode {
 #endif
 
 #undef COUNT_VERSION
-#endif  // TRIE_FatNode_H
+#endif  // TRIE_FatNode_PadSlot_H

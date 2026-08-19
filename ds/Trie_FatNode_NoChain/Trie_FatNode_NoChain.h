@@ -42,7 +42,7 @@ static inline ArraySlot<Key, Value>* decode_ptr(uintptr_t tagged) {
 static inline bool is_valid(uintptr_t tagged) { return (tagged & 1ULL) != 0; }
 
 template <typename Key, typename Value>
-struct alignas(64) Version {
+struct Version {
     std::atomic<Version<Key, Value>*> left;
     std::atomic<Version<Key, Value>*> right;
     std::atomic<Version<Key, Value>*> previous;

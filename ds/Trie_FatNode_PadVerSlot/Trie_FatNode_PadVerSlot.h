@@ -1,5 +1,5 @@
-#ifndef TRIE_FatNode_H
-#define TRIE_FatNode_H
+#ifndef TRIE_FatNode_PadVerSlot_H
+#define TRIE_FatNode_PadVerSlot_H
 
 #include <stdlib.h>
 
@@ -18,11 +18,14 @@ static const int ARRAY_SIZE = 500;  // slots per Version node
 template <typename Key, typename Value>
 struct ArraySlot {
     int sum;
+    char _pad0[4];
     uint64_t vcounter;
-
+    char _pad1[64 - sizeof(int) - sizeof(uint64_t) - sizeof(char[4])];
     ArraySlot() : sum(0), vcounter(0) {}
     ArraySlot(int s, uint64_t vc) : sum(s), vcounter(vc) {}
 };
+static_assert(sizeof(ArraySlot<int, int>) == 64,
+              "ArraySlot size is not 64 bytes. Padding is incorrect.");
 
 template <typename Key, typename Value>
 static inline uintptr_t encode_invalid(ArraySlot<Key, Value>* slot) {
@@ -43,12 +46,14 @@ static inline bool is_valid(uintptr_t tagged) { return (tagged & 1ULL) != 0; }
 
 template <typename Key, typename Value>
 struct Version {
-    std::atomic<Version<Key, Value>*> left;
-    std::atomic<Version<Key, Value>*> right;
-    std::atomic<Version<Key, Value>*> previous;
-
+    std::atomic<Version<Key, Value>*> left;      // 8B
+    std::atomic<Version<Key, Value>*> right;     // 8B
+    std::atomic<Version<Key, Value>*> previous;  // 8B
+    char _pad0[64 - 24];                         // 40B  → line 0 complete
     std::atomic<uintptr_t> array[ARRAY_SIZE];
-    std::atomic<int> next_empty_slot;
+    char _pad1[64 - (ARRAY_SIZE * 8) % 64];  // flush array tail to a line
+    std::atomic<int> next_empty_slot;        // 4B
+    char _pad2[64 - 4];                      // 60B  → own line
 
     Version()
         : left(nullptr), right(nullptr), previous(nullptr), next_empty_slot(0) {
@@ -113,10 +118,10 @@ struct Node {
 #endif
 
 template <typename Key, typename Value, class RecMgr>
-class Trie_FatNode {
+class Trie_FatNode_PadVerSlot {
    public:
-    Trie_FatNode(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
-                 Key key_max, Value no_val)
+    Trie_FatNode_PadVerSlot(RecMgr* recmgr_, int num_threads, size_t N_,
+                                 Key key_min, Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
           init(num_threads, false),
@@ -130,7 +135,7 @@ class Trie_FatNode {
         init_versions(Root);
     }
 
-    ~Trie_FatNode() {
+    ~Trie_FatNode_PadVerSlot() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -548,10 +553,10 @@ class Trie_FatNode {
                 Vx->right.store(freshRight, std::memory_order_release);
             }
 
-            SlotInfo sl = FTLV_UPDATE(tid,
-                x->left->version.load(std::memory_order_acquire), vcl);
-            SlotInfo sr = FTLV_UPDATE(tid,
-                x->right->version.load(std::memory_order_acquire), vcr);
+            SlotInfo sl = FTLV_UPDATE(
+                tid, x->left->version.load(std::memory_order_acquire), vcl);
+            SlotInfo sr = FTLV_UPDATE(
+                tid, x->right->version.load(std::memory_order_acquire), vcr);
 
             int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
@@ -576,10 +581,10 @@ class Trie_FatNode {
         // ── Overflow path
         uint64_t vcl = x->left->vcounter.load(std::memory_order_acquire);
         uint64_t vcr = x->right->vcounter.load(std::memory_order_acquire);
-        SlotInfo sl = FTLV_UPDATE(tid,
-            x->left->version.load(std::memory_order_acquire), vcl);
-        SlotInfo sr = FTLV_UPDATE(tid,
-            x->right->version.load(std::memory_order_acquire), vcr);
+        SlotInfo sl = FTLV_UPDATE(
+            tid, x->left->version.load(std::memory_order_acquire), vcl);
+        SlotInfo sr = FTLV_UPDATE(
+            tid, x->right->version.load(std::memory_order_acquire), vcr);
 
         int new_sum = (sl.found ? sl.sum : 0) + (sr.found ? sr.sum : 0);
 
@@ -690,4 +695,4 @@ class Trie_FatNode {
 #endif
 
 #undef COUNT_VERSION
-#endif  // TRIE_FatNode_H
+#endif  // TRIE_FatNode_PadVerSlot_H

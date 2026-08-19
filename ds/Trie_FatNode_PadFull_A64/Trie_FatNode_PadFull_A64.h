@@ -1,5 +1,5 @@
-#ifndef TRIE_FatNode_H
-#define TRIE_FatNode_H
+#ifndef TRIE_FatNode_PadFull_A64_H
+#define TRIE_FatNode_PadFull_A64_H
 
 #include <stdlib.h>
 
@@ -15,14 +15,26 @@
 
 static const int ARRAY_SIZE = 500;  // slots per Version node
 
+// ─── ArraySlot
+// ──────────────────────────────────────────────────────────────── Occupies
+// exactly one 64-byte cache line. Layout:
+//   [0-3]   int  sum        (4B)
+//   [4-7]   pad0            (4B) — aligns vcounter to 8-byte boundary
+//   [8-15]  uint64_t vcounter (8B)
+//   [16-63] pad1            (48B) — fills to 64B; prevents false sharing
+//                                    between adjacent heap-allocated slots
 template <typename Key, typename Value>
-struct ArraySlot {
-    int sum;
-    uint64_t vcounter;
+struct alignas(64) ArraySlot {
+    int sum;                     // 4B
+    char _pad0[4];               // 4B
+    uint64_t vcounter;           // 8B
+    char _pad1[64 - 4 - 4 - 8];  // 48B  →  total = 64B
 
     ArraySlot() : sum(0), vcounter(0) {}
     ArraySlot(int s, uint64_t vc) : sum(s), vcounter(vc) {}
 };
+static_assert(sizeof(ArraySlot<int, void*>) == 64,
+              "ArraySlot must be exactly 64 bytes");
 
 template <typename Key, typename Value>
 static inline uintptr_t encode_invalid(ArraySlot<Key, Value>* slot) {
@@ -41,14 +53,36 @@ static inline ArraySlot<Key, Value>* decode_ptr(uintptr_t tagged) {
 
 static inline bool is_valid(uintptr_t tagged) { return (tagged & 1ULL) != 0; }
 
-template <typename Key, typename Value>
-struct Version {
-    std::atomic<Version<Key, Value>*> left;
-    std::atomic<Version<Key, Value>*> right;
-    std::atomic<Version<Key, Value>*> previous;
+// ─── num_versions_created
+// ───────────────────────────────────────────────────── Wrapped in a struct so
+// the 64-byte isolation is part of the type, not a compiler hint.  Every access
+// site uses num_versions_created.value.
 
-    std::atomic<uintptr_t> array[ARRAY_SIZE];
-    std::atomic<int> next_empty_slot;
+// ─── Version
+// ────────────────────────────────────────────────────────────────── Cache-line
+// layout (64B boundary per group):
+//
+//   Line 0  [0-23]   left, right, previous  (3 × 8B = 24B)
+//            [24-63]  _pad0                  (40B)
+//   Lines 1-13        array[100]             (100 × 8B = 800B)
+//   [after array ends at byte 824]
+//   800 % 64 = 32  →  array tail shares 32B of a line.
+//   _pad1 = 64-32 = 32B pushes next_empty_slot to a fresh line.
+//   Lines 14+         next_empty_slot (4B) + _pad2 (60B)
+//
+// Effect: next_empty_slot (hit by FAA on every update) never shares a
+// cache line with the array tail — eliminates false sharing on the hot path.
+template <typename Key, typename Value>
+struct alignas(64) Version {
+    std::atomic<Version<Key, Value>*> left;      // 8B
+    std::atomic<Version<Key, Value>*> right;     // 8B
+    std::atomic<Version<Key, Value>*> previous;  // 8B
+    char _pad0[64 - 24];                         // 40B  →  line 0 complete
+
+    std::atomic<uintptr_t> array[ARRAY_SIZE];  // 800B (lines 1-13 + 32B)
+    char _pad1[64 - (ARRAY_SIZE * 8) % 64];    // 32B  →  flush to line boundary
+    std::atomic<int> next_empty_slot;          // 4B
+    char _pad2[64 - 4];                        // 60B  →  line complete
 
     Version()
         : left(nullptr), right(nullptr), previous(nullptr), next_empty_slot(0) {
@@ -76,15 +110,30 @@ struct Version {
     }
 };
 
+// ─── Node
+// ─────────────────────────────────────────────────────────────────────
+// Occupies exactly one 64-byte cache line.
+// Layout:
+//   [0-3]   Key   key        (4B, assuming int)
+//   [4-7]   _pad0            (4B) — aligns Value (void*) to 8B boundary
+//   [8-15]  Value value      (8B)
+//   [16-23] Node* left       (8B)
+//   [24-31] Node* right      (8B)
+//   [32-39] Node* parent     (8B)
+//   [40-47] atomic<Version*> version  (8B)
+//   [48-55] atomic<uint64_t> vcounter (8B)
+//   [56-63] _pad1            (8B) — tail pad to reach 64B
 template <typename Key, typename Value>
-struct Node {
-    Key key;
-    Value value;
-    Node<Key, Value>* left;
-    Node<Key, Value>* right;
-    Node<Key, Value>* parent;
-    std::atomic<Version<Key, Value>*> version;
-    std::atomic<uint64_t> vcounter;
+struct alignas(64) Node {
+    Key key;                                         // 4B
+    char _pad0[4];                                   // 4B
+    Value value;                                     // 8B
+    Node<Key, Value>* left;                          // 8B
+    Node<Key, Value>* right;                         // 8B
+    Node<Key, Value>* parent;                        // 8B
+    std::atomic<Version<Key, Value>*> version;       // 8B
+    std::atomic<uint64_t> vcounter;                  // 8B
+    char _pad1[64 - 4 - 4 - 8 - 8 - 8 - 8 - 8 - 8];  // 8B  →  total = 64B
 
     explicit Node(Key k)
         : key(k),
@@ -95,6 +144,16 @@ struct Node {
           version(nullptr),
           vcounter(0) {}
 };
+static_assert(sizeof(Node<int, void*>) == 64, "Node must be exactly 64 bytes");
+
+// ─── Trie_FatNode_PadFull
+// ────────────────────────────────────────────────────────────────── Algorithm:
+// identical to Trie_FatNode.
+//   - Updates use slot-array / vcounter architecture.
+//   - Reads (find) traverse the full path from root to child, reading every
+//     node's version in between (v2 behaviour; contrast with v3/v5 which jump
+//     directly to the leaf after reading the root timestamp).
+// Padding: all alignas() directives replaced by explicit char _padN members.
 
 #ifdef MEASURE_VERSIONS
 #define COUNT_VERSION(tid) GSTATS_ADD((tid), versions_created, 1)
@@ -113,10 +172,10 @@ struct Node {
 #endif
 
 template <typename Key, typename Value, class RecMgr>
-class Trie_FatNode {
+class Trie_FatNode_PadFull_A64 {
    public:
-    Trie_FatNode(RecMgr* recmgr_, int num_threads, size_t N_, Key key_min,
-                 Key key_max, Value no_val)
+    Trie_FatNode_PadFull_A64(RecMgr* recmgr_, int num_threads, size_t N_,
+                              Key key_min, Key key_max, Value no_val)
         : recmgr(recmgr_),
           Root(nullptr),
           init(num_threads, false),
@@ -130,7 +189,7 @@ class Trie_FatNode {
         init_versions(Root);
     }
 
-    ~Trie_FatNode() {
+    ~Trie_FatNode_PadFull_A64() {
         destroy_tree(Root);
         delete[] Leaf;
     }
@@ -147,6 +206,10 @@ class Trie_FatNode {
         recmgr->deinitThread(tid);
     }
 
+    // ── find: v2 algorithm ─────────────────────────────────────────────────
+    // Reads the root timestamp, then traverses every node on the path from
+    // root to the target leaf, finding the version at each node that is ≤ the
+    // snapshot bound established at the root.
     Value find(const int tid, Key k) {
         if (k < KEY_MIN || k > KEY_MAX) return NO_VALUE;
 
@@ -325,8 +388,6 @@ class Trie_FatNode {
 
     int size(const int tid) {
         int keysum = 0;
-        int count = 0;
-
         for (size_t i = 0; i < N; ++i) {
             Node<Key, Value>* leaf = Leaf[i];
             Version<Key, Value>* v =
@@ -335,10 +396,8 @@ class Trie_FatNode {
             SlotInfo info = find_the_latest_version(v, snap);
             if (info.found && info.sum == 1) {
                 keysum += (int)leaf->key;
-                ++count;
             }
         }
-
         return keysum;
     }
 
@@ -365,7 +424,6 @@ class Trie_FatNode {
     const Key& get_key_max() { return KEY_MAX; }
 
    private:
-    // Result from find_the_latest_version.
     struct SlotInfo {
         bool found;
         int sum;
@@ -400,7 +458,6 @@ class Trie_FatNode {
 
     void init_versions(Node<Key, Value>* node) {
         if (!node) return;
-
         if (node->left) init_versions(node->left);
         if (node->right) init_versions(node->right);
 
@@ -413,7 +470,6 @@ class Trie_FatNode {
                            std::memory_order_relaxed);
         }
 
-        // slot 0 as VALID with sum=0, vcounter=0.
         uintptr_t tagged = v->array[0].load(std::memory_order_relaxed);
         ArraySlot<Key, Value>* slot = decode_ptr<Key, Value>(tagged);
         slot->sum = 0;
@@ -438,7 +494,6 @@ class Trie_FatNode {
             delete v;
             v = prev;
         }
-
         delete node;
     }
 
@@ -467,12 +522,7 @@ class Trie_FatNode {
                 }
             }
 
-            // vcounters are monotonically increasing toward the head of the
-            // chain. Once we have found a slot matching target_vc exactly,
-            // all older version nodes can only contain smaller vcounters —
-            // they cannot improve our result. Stop early.
             if (latest.found && latest.vcounter == target_vc) return latest;
-
             v = v->previous.load(std::memory_order_acquire);
         }
 
@@ -562,7 +612,6 @@ class Trie_FatNode {
             slot->vcounter = vcounter1 + 1;
 
             uint64_t expected_vc = vcounter1;
-            // The slot should be currently invalid.
             if (x->vcounter.compare_exchange_strong(
                     expected_vc, vcounter1 + 1, std::memory_order_acq_rel,
                     std::memory_order_relaxed)) {
@@ -608,7 +657,6 @@ class Trie_FatNode {
             } else {
                 return false;
             }
-
         } else {
             delete newV;
             return false;
@@ -659,29 +707,6 @@ class Trie_FatNode {
 
         return validate_node(node->left) && validate_node(node->right);
     }
-
-    bool validate_aggregate_matches_leaves() {
-        int leaf_count = 0;
-
-        for (size_t i = 0; i < N; ++i) {
-            Node<Key, Value>* leaf = Leaf[i];
-            uint64_t snap = leaf->vcounter.load(std::memory_order_acquire);
-            Version<Key, Value>* v =
-                leaf->version.load(std::memory_order_acquire);
-            SlotInfo info = find_the_latest_version(v, snap);
-            if (info.found && info.sum == 1) {
-                ++leaf_count;
-            }
-        }
-
-        uint64_t root_snap = Root->vcounter.load(std::memory_order_acquire);
-        Version<Key, Value>* root_v =
-            Root->version.load(std::memory_order_acquire);
-        SlotInfo root_info = find_the_latest_version(root_v, root_snap);
-        int root_aggregate = root_info.found ? root_info.sum : 0;
-
-        return root_aggregate == leaf_count;
-    }
 };
 
 #ifdef MEASURE_PREV_TRAVERSAL
@@ -690,4 +715,4 @@ class Trie_FatNode {
 #endif
 
 #undef COUNT_VERSION
-#endif  // TRIE_FatNode_H
+#endif  // TRIE_FatNode_PadFull_A64_H

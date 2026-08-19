@@ -19,7 +19,7 @@
 // Version is never mutated after publication. keyValue is only meaningful at
 // leaves (sum == 1).
 template <typename Key, typename Value>
-struct alignas(64) Version {
+struct Version {
     const Version<Key, Value>* left;
     const Version<Key, Value>* right;
     const int sum;       // aggregate key count in this subtree
