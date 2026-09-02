@@ -1016,7 +1016,7 @@ void createAndPrefillDataStructure(GlobalsT* g, int64_t expectedSize) {
                      g->prefillStartTime)
                      .count()
               << std::endl;
-    g->dsAdapter->printSummary();  ///////// debug
+    // g->dsAdapter->printSummary();  ///////// debug
 }
 
 template <class GlobalsT>
@@ -1229,16 +1229,16 @@ void printOutput(GlobalsT* g) {
     // std::cout<<"size_nodes="<<
     if (treeStats) std::cout << treeStats->toString() << std::endl;
 #endif
-    g->dsAdapter
-        ->printSummary();  // can put this before GSTATS_PRINT to help some
-                           // hacky debug code in reclaimer_ebr_token route some
-                           // information to GSTATS_ to be printed. not a big
-                           // deal, though.
+    // can put this before GSTATS_PRINT to help some hacky debug code in
+    // reclaimer_ebr_token route some information to GSTATS_ to be printed.
+    // not a big deal, though.
 
 #ifdef USE_GSTATS
     GSTATS_PRINT;
     std::cout << std::endl;
 #endif
+
+    g->dsAdapter->printSummary();
 
     long long threadsKeySum = 0;
     long long threadsSize = 0;

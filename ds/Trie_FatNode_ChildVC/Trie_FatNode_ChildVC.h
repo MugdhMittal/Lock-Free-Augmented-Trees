@@ -13,7 +13,7 @@
 #include "errors.h"
 #include "record_manager.h"
 
-static const int ARRAY_SIZE = 500;  // slots per Version node
+static const int ARRAY_SIZE = 100;  // slots per Version node
 
 template <typename Key, typename Value>
 struct ArraySlot {
