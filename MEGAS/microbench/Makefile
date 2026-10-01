@@ -143,17 +143,15 @@ dir_guard:
 
 
 ################################################################################
-#### BEGIN check for proper git cloning WITH SUBMODULES
+#### BEGIN check for bundled support sources
 ################################################################################
 define submodules_err_msg=
 
 ================================================================================
-==== ERROR: CANNOT FIND SUBMODULES                                          ====
+==== ERROR: CANNOT FIND BUNDLED SUPPORT SOURCES                             ====
 ================================================================================
-==== You most likely used the wrong git clone command...                    ====
-====                                                                        ====
-==== Note that a special argument is needed for cloning:                    ====
-==== git clone https://gitlab.com/trbot86/setbench.git --recurse-submodules ====
+==== This MEGAS directory needs its common/recordmgr and tools/ copies.     ====
+==== Copy or pull the complete MEGAS directory before building.             ====
 ================================================================================
 endef
 dir_exists_tools=$(shell if [ -d "../tools" ]; then echo 1 ; else echo 0 ; fi )
@@ -173,7 +171,7 @@ ifeq ($(num_files_recordmgr),0)
     $(error $(submodules_err_msg))
 endif
 ################################################################################
-#### END check for proper git cloning WITH SUBMODULES
+#### END check for bundled support sources
 ################################################################################
 
 
