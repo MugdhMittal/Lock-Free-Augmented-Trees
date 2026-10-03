@@ -1,9 +1,9 @@
 [submodule "common/recordmgr"]
 	path = common/recordmgr
-	url = ../recordmanager.git
+	url = https://gitlab.com/trbot86/recordmanager.git
 [submodule "tools"]
 	path = tools
-	url = ../tools.git
+	url = https://gitlab.com/trbot86/tools.git
 [submodule "ds/srivastava_abtree_mcs"]
 	path = ds/srivastava_abtree_mcs
 	url = https://gitlab.com/SrivastavaAnubhav/srivastava_abtree.git
