@@ -1,8 +1,10 @@
 #ifndef LOCK_FREE_TREE_Aug_ADAPTER_H
 #define LOCK_FREE_TREE_Aug_ADAPTER_H
 
+#include <algorithm>
 #include <csignal>
 #include <iostream>
+#include <limits>
 
 #include "Lock_Free_Tree_Aug.h"
 #include "errors.h"
@@ -34,10 +36,14 @@ class ds_adapter {
     ds_adapter(const int NUM_THREADS, const K& _KEY_MIN, const K& _KEY_MAX,
                const V& VALUE_RESERVED, Random64* const unused2)
         : NO_VALUE(VALUE_RESERVED),
-          ds(new DATA_STRUCTURE_T(NUM_THREADS, _KEY_MIN, _KEY_MAX, NO_VALUE,
-                                  0 /* unused */)),
+          ds(new DATA_STRUCTURE_T(
+              NUM_THREADS, _KEY_MIN,
+              std::min(_KEY_MAX,
+                       static_cast<K>(std::numeric_limits<K>::max() - 2)),
+              NO_VALUE, 0 /* unused */)),
           KEY_MIN(_KEY_MIN),
-          KEY_MAX(_KEY_MAX) {}
+          KEY_MAX(std::min(_KEY_MAX,
+                           static_cast<K>(std::numeric_limits<K>::max() - 2))) {}
     ~ds_adapter() { delete ds; }
 
     V getNoValue() { return NO_VALUE; }
@@ -77,8 +83,11 @@ class ds_adapter {
     void printSummary() {
         auto recmgr = ds->debugGetRecMgr();
         recmgr->printStatus();
-        printf("Total versions created = %zu\n", num_versions_created.load());
-        num_versions_created.store(0);
+#ifdef MEASURE_VERSIONS
+        std::cout << "Total versions created = "
+                  << GSTATS_GET_STAT_METRICS(versions_created, TOTAL)[0].sum
+                  << std::endl;
+#endif
 
 #ifdef USE_TREE_STATS
         auto stats = createTreeStats(KEY_MIN, KEY_MAX);
@@ -87,7 +96,7 @@ class ds_adapter {
 #endif
     }
 
-    bool validateStructure() { return true; }
+    bool validateStructure() { return ds->validateStructure(); }
 
     void printObjectSizes() {
         std::cout << "sizes: node=" << (sizeof(node_t<K, V>))
@@ -160,10 +169,8 @@ class ds_adapter {
         size_t getNumKeys(NodePtrType node) {
             if (!isLeaf(node)) return 0;
             auto leaf = static_cast<Leaf<K, V>*>(node);
-
-            if (leaf->key == INFINITY1 || leaf->key == INFINITY2) return 0;
-
-            return 1;
+            // Sentinel leaves carry a version with sum == 0.
+            return leaf->version.load()->sum ? 1 : 0;
         }
 
         size_t getSumOfKeys(NodePtrType node) {

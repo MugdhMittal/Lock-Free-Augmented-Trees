@@ -5,8 +5,11 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
+#include <limits>
 #include <stack>
+#include <stdexcept>
 #include <thread>
 #include <tuple>
 #include <vector>
@@ -14,11 +17,11 @@
 #include "errors.h"
 #include "record_manager.h"
 
-inline std::atomic<size_t> num_versions_created = 0;
-
-using Key = int;
-const Key INFINITY1 = 100000000;
-const Key INFINITY2 = 1000000000;
+#ifdef MEASURE_VERSIONS
+#define COUNT_VERSION(tid) GSTATS_ADD((tid), versions_created, 1)
+#else
+#define COUNT_VERSION(tid) ((void)(tid))
+#endif
 
 template <typename Key, typename Value>
 struct Node;
@@ -37,13 +40,13 @@ struct Version {
     Version* left;
     Version* right;
     const int sum;
-    Version(Key k) : key(k), left(nullptr), right(nullptr), sum(0) {
-        num_versions_created++;
-    }
+    const Value value;  // only meaningful at leaf versions
+    // Leaf version: no children.
+    Version(Key k, int s, Value v)
+        : key(k), left(nullptr), right(nullptr), sum(s), value(v) {}
+    // Internal version: snapshot of both children.
     Version(Key k, Version* l, Version* r, int s)
-        : key(k), left(l), right(r), sum(s) {
-        num_versions_created++;
-    }
+        : key(k), left(l), right(r), sum(s), value(Value{}) {}
 };
 
 template <typename Key, typename Value>
@@ -77,12 +80,12 @@ struct Internal : public Node<Key, Value> {
     Internal(Key k, Node<Key, Value>* l, Node<Key, Value>* r)
         : key(k), left(l), right(r) {
         update.store(Update<Key, Value>{CLEAN, nullptr});
-        this->version.store(nullptr);
+        this->version.store(nullptr, std::memory_order_relaxed);
     }
     Internal(Key k, Node<Key, Value>* l, Node<Key, Value>* r,
              Version<Key, Value>* v)
         : key(k), left(l), right(r) {
-        this->version.store(v);
+        this->version.store(v, std::memory_order_relaxed);
         update.store(Update<Key, Value>{CLEAN, nullptr});
     }
 };
@@ -91,7 +94,9 @@ template <typename Key, typename Value>
 struct Leaf : public Node<Key, Value> {
     Key key;
     Value value;
-    Leaf(Key k, Value v) : key(k), value(v) { this->version.store(nullptr); }
+    Leaf(Key k, Value v) : key(k), value(v) {
+        this->version.store(nullptr, std::memory_order_relaxed);
+    }
 };
 
 template <typename Key, typename Value>
@@ -125,7 +130,14 @@ class Lock_Free_Tree {
     std::vector<std::atomic<bool>> init;
     const Key KEY_MIN;
     const Key KEY_MAX;
+    // Sentinel keys: larger than any key that can be inserted.
+    const Key INFINITY1;
+    const Key INFINITY2;
     std::vector<std::stack<Node<Key, Value>*>*> operation_stacks;
+
+    bool valid_key(Key k) const {
+        return k >= KEY_MIN && k <= KEY_MAX && k < INFINITY1;
+    }
 
    public:
     Lock_Free_Tree(const int _NUM_THREADS, const Key& _KEY_MIN,
@@ -136,22 +148,30 @@ class Lock_Free_Tree {
           recmgr(new RecMgr(NUM_THREADS)),
           init(_NUM_THREADS),
           KEY_MIN(_KEY_MIN),
-          KEY_MAX(_KEY_MAX) {
+          KEY_MAX(_KEY_MAX),
+          INFINITY1(std::numeric_limits<Key>::max() - 1),
+          INFINITY2(std::numeric_limits<Key>::max()) {
+        if (_KEY_MIN > _KEY_MAX || _KEY_MAX >= INFINITY1)
+            throw std::invalid_argument("BST key range overlaps sentinel");
         for (int i = 0; i < _NUM_THREADS; ++i) {
             init[i] = false;
         }
         Leaf<Key, Value>* leftLeaf = new Leaf<Key, Value>(INFINITY1, NO_VALUE);
         Leaf<Key, Value>* rightLeaf = new Leaf<Key, Value>(INFINITY2, NO_VALUE);
 
-        leftLeaf->version.store(
-            new Version<Key, Value>(INFINITY1, nullptr, nullptr, 0));
+        leftLeaf->version.store(new Version<Key, Value>(INFINITY1, 0, NO_VALUE),
+                                std::memory_order_relaxed);
         rightLeaf->version.store(
-            new Version<Key, Value>(INFINITY2, nullptr, nullptr, 0));
+            new Version<Key, Value>(INFINITY2, 0, NO_VALUE),
+            std::memory_order_relaxed);
 
         Root = new Internal<Key, Value>(INFINITY2, leftLeaf, rightLeaf);
 
-        Root->version.store(new Version<Key, Value>(
-            INFINITY2, leftLeaf->version.load(), rightLeaf->version.load(), 0));
+        Root->version.store(
+            new Version<Key, Value>(
+                INFINITY2, leftLeaf->version.load(std::memory_order_relaxed),
+                rightLeaf->version.load(std::memory_order_relaxed), 0),
+            std::memory_order_relaxed);
         operation_stacks.resize(NUM_THREADS);
         for (int i = 0; i < NUM_THREADS; ++i) {
             operation_stacks[i] = new std::stack<Node<Key, Value>*>();
@@ -217,9 +237,9 @@ class Lock_Free_Tree {
             gpupdate = pupdate;
             pupdate = p->update.load();
             if (k < p->key)
-                l = p->left.load();
+                l = p->left.load(std::memory_order_acquire);
             else
-                l = p->right.load();
+                l = p->right.load(std::memory_order_acquire);
 
             path.push(l);
         }
@@ -227,14 +247,20 @@ class Lock_Free_Tree {
         return {gp, p, dynamic_cast<Leaf<Key, Value>*>(l), pupdate, gpupdate};
     }
 
+    // Lookups traverse the root's version snapshot, not the live nodes.
     Value find(const int tid, Key k) {
-        auto result = SearchAndGetPath(k, tid);
-        Leaf<Key, Value>* l = std::get<2>(result);
-        if (l != nullptr && l->key == k) return l->value;
-        return NO_VALUE;
+        if (!valid_key(k)) return NO_VALUE;
+        Version<Key, Value>* v = Root->version.load(std::memory_order_acquire);
+        if (v == nullptr || v->sum == 0) return NO_VALUE;
+        while (v->left != nullptr) {
+            v = (k < v->key) ? v->left : v->right;
+            if (v == nullptr || v->sum == 0) return NO_VALUE;
+        }
+        return (v->key == k) ? v->value : NO_VALUE;
     }
 
     Value insertIfAbsent(const int tid, Key k, Value v) {
+        if (!valid_key(k)) return v;
         while (true) {
             auto searchResult = SearchAndGetPath(k, tid);
             std::stack<Node<Key, Value>*>& path = *operation_stacks[tid];
@@ -244,7 +270,7 @@ class Lock_Free_Tree {
 
             if (leafNode != nullptr) {
                 if (leafNode->key == k) {
-                    Propagate(path);
+                    Propagate(path, tid);
                     return leafNode->value;
                 }
 
@@ -255,11 +281,16 @@ class Lock_Free_Tree {
                     Help(pupdate);
                 } else {
                     Leaf<Key, Value>* newLeaf = new Leaf<Key, Value>(k, v);
-                    newLeaf->version.store(
-                        new Version<Key, Value>(k, nullptr, nullptr, 1));
+                    Version<Key, Value>* newLeafVersion =
+                        new Version<Key, Value>(k, 1, v);
+                    COUNT_VERSION(tid);
+                    newLeaf->version.store(newLeafVersion,
+                                           std::memory_order_relaxed);
                     Leaf<Key, Value>* newSibling =
                         new Leaf<Key, Value>(leafNode->key, leafNode->value);
-                    newSibling->version.store(leafNode->version.load());
+                    newSibling->version.store(
+                        leafNode->version.load(std::memory_order_acquire),
+                        std::memory_order_relaxed);
 
                     Internal<Key, Value>* newInternal =
                         (k < leafNode->key)
@@ -267,11 +298,21 @@ class Lock_Free_Tree {
                                                        newSibling)
                             : new Internal<Key, Value>(newLeaf->key, newSibling,
                                                        newLeaf);
-                    newInternal->version.store(new Version<Key, Value>(
-                        newInternal->key, newLeaf->version.load(),
-                        newSibling->version.load(),
-                        (newSibling->version.load()->sum +
-                         newLeaf->version.load()->sum)));
+                    Version<Key, Value>* leftVersion =
+                        static_cast<Leaf<Key, Value>*>(
+                            newInternal->left.load(std::memory_order_relaxed))
+                            ->version.load(std::memory_order_relaxed);
+                    Version<Key, Value>* rightVersion =
+                        static_cast<Leaf<Key, Value>*>(
+                            newInternal->right.load(std::memory_order_relaxed))
+                            ->version.load(std::memory_order_relaxed);
+                    Version<Key, Value>* newInternalVersion =
+                        new Version<Key, Value>(
+                            newInternal->key, leftVersion, rightVersion,
+                            leftVersion->sum + rightVersion->sum);
+                    COUNT_VERSION(tid);
+                    newInternal->version.store(newInternalVersion,
+                                               std::memory_order_relaxed);
 
                     IInfo<Key, Value>* op =
                         new IInfo<Key, Value>(p, newInternal, leafNode);
@@ -280,7 +321,7 @@ class Lock_Free_Tree {
 
                     if (p->update.compare_exchange_strong(pupdate, desired)) {
                         HelpInsert(op);
-                        Propagate(path);
+                        Propagate(path, tid);
                         return NO_VALUE;
                     } else {
                         Help(pupdate);
@@ -288,10 +329,12 @@ class Lock_Free_Tree {
                         recmgr->deallocate(tid, newSibling);
                         recmgr->deallocate(tid, newInternal);
                         recmgr->deallocate(tid, op);
+                        delete newInternalVersion;
+                        delete newLeafVersion;
                     }
                 }
             } else {
-                Propagate(path);
+                Propagate(path, tid);
                 continue;
             }
         }
@@ -306,6 +349,7 @@ class Lock_Free_Tree {
     }
 
     Value erase(const int tid, Key k) {
+        if (!valid_key(k)) return NO_VALUE;
         while (true) {
             auto searchResult = SearchAndGetPath(k, tid);
             std::stack<Node<Key, Value>*>& path = *operation_stacks[tid];
@@ -315,7 +359,7 @@ class Lock_Free_Tree {
 
             if (leafNode != nullptr) {
                 if (leafNode->key != k) {
-                    Propagate(path);
+                    Propagate(path, tid);
                     return NO_VALUE;
                 }
 
@@ -336,7 +380,7 @@ class Lock_Free_Tree {
 
                     if (gp->update.compare_exchange_strong(gpupdate, desired)) {
                         if (HelpDelete(op)) {
-                            Propagate(path);
+                            Propagate(path, tid);
                             return leafNode->value;
                         }
 
@@ -346,7 +390,7 @@ class Lock_Free_Tree {
                     }
                 }
             } else {
-                Propagate(path);
+                Propagate(path, tid);
                 continue;
             }
         }
@@ -374,10 +418,10 @@ class Lock_Free_Tree {
     void HelpMarked(DInfo<Key, Value>* op) {
         if (op == nullptr) return;
         Node<Key, Value>* other;
-        if (op->p->left.load() == op->l)
-            other = op->p->right.load();
+        if (op->p->left.load(std::memory_order_acquire) == op->l)
+            other = op->p->right.load(std::memory_order_acquire);
         else
-            other = op->p->left.load();
+            other = op->p->left.load(std::memory_order_acquire);
         CAS_CHILD(op->gp, op->p, other);
         Update<Key, Value> expected_dflag = {DFLAG, op};
         op->gp->update.compare_exchange_strong(expected_dflag,
@@ -396,30 +440,35 @@ class Lock_Free_Tree {
 
     void CAS_CHILD(Internal<Key, Value>* parent, Node<Key, Value>* old,
                    Node<Key, Value>* newchild) {
-        if (parent->left.load() == old) {
-            parent->left.compare_exchange_strong(old, newchild);
+        if (parent->left.load(std::memory_order_acquire) == old) {
+            parent->left.compare_exchange_strong(old, newchild,
+                                                 std::memory_order_acq_rel,
+                                                 std::memory_order_acquire);
         } else {
-            parent->right.compare_exchange_strong(old, newchild);
+            parent->right.compare_exchange_strong(old, newchild,
+                                                  std::memory_order_acq_rel,
+                                                  std::memory_order_acquire);
         }
     }
 
-    bool Refresh(Node<Key, Value>*& x) {
+    bool Refresh(Node<Key, Value>*& x, const int tid) {
         Internal<Key, Value>* ix = static_cast<Internal<Key, Value>*>(x);
-        Version<Key, Value>* old_version = ix->version.load();
+        Version<Key, Value>* old_version =
+            ix->version.load(std::memory_order_acquire);
 
         Node<Key, Value>* xL;
         Version<Key, Value>* vL;
         do {
-            xL = ix->left.load();
-            vL = (xL ? xL->version.load() : nullptr);
-        } while (ix->left.load() != xL);
+            xL = ix->left.load(std::memory_order_acquire);
+            vL = (xL ? xL->version.load(std::memory_order_acquire) : nullptr);
+        } while (ix->left.load(std::memory_order_acquire) != xL);
 
         Node<Key, Value>* xR;
         Version<Key, Value>* vR;
         do {
-            xR = ix->right.load();
-            vR = (xR ? xR->version.load() : nullptr);
-        } while (ix->right.load() != xR);
+            xR = ix->right.load(std::memory_order_acquire);
+            vR = (xR ? xR->version.load(std::memory_order_acquire) : nullptr);
+        } while (ix->right.load(std::memory_order_acquire) != xR);
 
         int leftSum = (vL ? vL->sum : 0);
         int rightSum = (vR ? vR->sum : 0);
@@ -427,8 +476,11 @@ class Lock_Free_Tree {
 
         Version<Key, Value>* newV =
             new Version<Key, Value>(ix->key, vL, vR, newSum);
+        COUNT_VERSION(tid);
 
-        if (ix->version.compare_exchange_strong(old_version, newV)) {
+        if (ix->version.compare_exchange_strong(old_version, newV,
+                                                std::memory_order_release,
+                                                std::memory_order_acquire)) {
             return true;
         } else {
             delete newV;
@@ -436,24 +488,54 @@ class Lock_Free_Tree {
         }
     }
 
-    void Propagate(std::stack<Node<Key, Value>*>& path) {
+    void Propagate(std::stack<Node<Key, Value>*>& path, const int tid) {
         while (!path.empty()) {
             Node<Key, Value>* x = path.top();
             path.pop();
 
             if (x == nullptr) continue;
 
-            if (!Refresh(x)) {
-                Refresh(x);
+            if (!Refresh(x, tid)) {
+                Refresh(x, tid);
             }
         }
     }
 
+   private:
+    static int64_t key_sum(Version<Key, Value>* v) {
+        if (v == nullptr || v->sum == 0) return 0;
+        if (v->left == nullptr) return static_cast<int64_t>(v->key);
+        return key_sum(v->left) + key_sum(v->right);
+    }
+
+    static bool validate_version(Version<Key, Value>* v) {
+        if (v == nullptr || v->sum < 0) return false;
+        if (v->left == nullptr && v->right == nullptr) return v->sum <= 1;
+        return v->left && v->right &&
+               v->sum == v->left->sum + v->right->sum &&
+               validate_version(v->left) && validate_version(v->right);
+    }
+
+    static int live_count(Node<Key, Value>* node) {
+        if (auto* leaf = dynamic_cast<Leaf<Key, Value>*>(node))
+            return leaf->version.load(std::memory_order_acquire)->sum;
+        auto* x = static_cast<Internal<Key, Value>*>(node);
+        return live_count(x->left.load(std::memory_order_acquire)) +
+               live_count(x->right.load(std::memory_order_acquire));
+    }
+
    public:
-    int size(const int tid) { return Root->version.load()->sum; }
+    int size(const int tid) {
+        return Root->version.load(std::memory_order_acquire)->sum;
+    }
     int64_t keySum() {
-        setbench_error("keySum() not implemented");
-        return 0;
+        return key_sum(Root->version.load(std::memory_order_acquire));
+    }
+    bool validateStructure() {
+        Version<Key, Value>* root_version =
+            Root->version.load(std::memory_order_acquire);
+        return validate_version(root_version) &&
+               root_version->sum == live_count(Root);
     }
     RecMgr* debugGetRecMgr() { return recmgr; }
     Node<Key, Value>* get_root() { return Root; }
@@ -461,4 +543,6 @@ class Lock_Free_Tree {
     const Key& get_key_min() { return KEY_MIN; }
     const Key& get_key_max() { return KEY_MAX; }
 };
+
+#undef COUNT_VERSION
 #endif  // LOCK_FREE_TREE_H

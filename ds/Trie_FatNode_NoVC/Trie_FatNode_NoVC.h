@@ -59,8 +59,6 @@ class Trie {
     const Key key_max_;
     const Value no_value_;
     std::size_t logical_size_;
-    std::size_t capacity_;
-    unsigned height_ = 0;
     Node<Key, Value>* root_ = nullptr;
     std::vector<Node<Key, Value>*> leaves_;
     std::vector<std::atomic<bool>> initialized_;
@@ -83,25 +81,24 @@ class Trie {
         return idx < logical_size_;
     }
 
+    // Range-split over the inclusive leaf range [lo, hi], the same shape as
+    // Trie_Baseline::build_tree.
     Node<Key, Value>* build(std::size_t lo, std::size_t hi, Node<Key, Value>* parent) {
         auto* x = new Node<Key, Value>(static_cast<Key>(-1), parent);
-        if (hi - lo == 1) {
-            // Padded leaves outside the logical range are never addressable.
-            if (lo < logical_size_) {
-                if constexpr (std::is_signed<Key>::value)
-                    x->key = static_cast<Key>(
-                        static_cast<std::int64_t>(key_min_) +
-                        static_cast<std::int64_t>(lo));
-                else
-                    x->key = static_cast<Key>(
-                        static_cast<std::uint64_t>(key_min_) +
-                        static_cast<std::uint64_t>(lo));
-            }
+        if (lo == hi) {
+            if constexpr (std::is_signed<Key>::value)
+                x->key = static_cast<Key>(
+                    static_cast<std::int64_t>(key_min_) +
+                    static_cast<std::int64_t>(lo));
+            else
+                x->key = static_cast<Key>(
+                    static_cast<std::uint64_t>(key_min_) +
+                    static_cast<std::uint64_t>(lo));
             leaves_[lo] = x;
         } else {
             const std::size_t mid = lo + (hi - lo) / 2;
             x->left = build(lo, mid, x);
-            x->right = build(mid, hi, x);
+            x->right = build(mid + 1, hi, x);
         }
         auto* v = new Version<Value>;
         auto& slot = v->array[0];
@@ -195,15 +192,11 @@ public:
          Value no_value)
         : recmgr_(recmgr), key_min_(key_min), key_max_(key_max),
           no_value_(no_value), logical_size_(checked_range(key_min, key_max)),
-          capacity_(1), initialized_(num_threads) {
-        while (capacity_ < logical_size_) {
-            capacity_ <<= 1;
-            ++height_;
-        }
-        leaves_.resize(capacity_, nullptr);
+          initialized_(num_threads) {
+        leaves_.resize(logical_size_, nullptr);
         for (auto& initialized : initialized_)
             initialized.store(false, std::memory_order_relaxed);
-        root_ = build(0, capacity_, nullptr);
+        root_ = build(0, logical_size_ - 1, nullptr);
     }
 
     void initThread(int tid) {
@@ -218,42 +211,52 @@ public:
         if (!index_of(k, idx)) return no_value_;
         ArraySlot<Value>* current = root_->slot_ptr.load(std::memory_order_acquire);
         if (!current || current->sum < 1) return no_value_;
-        for (unsigned level = 0; level < height_; ++level) {
-            const unsigned bit = (idx >> (height_ - 1 - level)) & 1U;
-            current = bit ? current->right_slot_ptr : current->left_slot_ptr;
+        std::size_t lo = 0, hi = logical_size_ - 1;
+        while (lo < hi) {
+            const std::size_t mid = lo + (hi - lo) / 2;
+            if (idx <= mid) {
+                current = current->left_slot_ptr;
+                hi = mid;
+            } else {
+                current = current->right_slot_ptr;
+                lo = mid + 1;
+            }
             if (!current || current->sum < 1) return no_value_;
         }
         return leaves_[idx]->value;
     }
 
-    bool insertIfAbsent(int tid, Key k, Value value) {
+    // Returns NO_VALUE when k was inserted, (Value)k otherwise (Trie_Baseline
+    // convention).
+    Value insertIfAbsent(int tid, Key k, Value value) {
         std::size_t idx;
-        if (!index_of(k, idx)) return false;
+        if (!index_of(k, idx)) return no_value_;
         Node<Key, Value>* leaf = leaves_[idx];
         ArraySlot<Value>* old = leaf->slot_ptr.load(std::memory_order_acquire);
         if (old->sum == 1) {
             propagate(tid, leaf->parent);
-            return false;
+            return (Value)k;
         }
         leaf->value = value;
         const bool installed = publish_leaf(tid, leaf, old, 1);
         propagate(tid, leaf->parent);
-        return installed;
+        return installed ? no_value_ : (Value)k;
     }
 
-    std::pair<bool, Value> erase(int tid, Key k) {
+    // Returns (Value)k when k was erased, NO_VALUE otherwise (Trie_Baseline
+    // convention).
+    Value erase(int tid, Key k) {
         std::size_t idx;
-        if (!index_of(k, idx)) return {false, no_value_};
+        if (!index_of(k, idx)) return no_value_;
         Node<Key, Value>* leaf = leaves_[idx];
         ArraySlot<Value>* old = leaf->slot_ptr.load(std::memory_order_acquire);
         if (old->sum != 1) {
             propagate(tid, leaf->parent);
-            return {false, no_value_};
+            return no_value_;
         }
-        const Value old_value = leaf->value;
         const bool installed = publish_leaf(tid, leaf, old, 0);
         propagate(tid, leaf->parent);
-        return {installed, installed ? old_value : no_value_};
+        return installed ? (Value)k : no_value_;
     }
 
     std::int64_t keySum() const {

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <stack>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -126,7 +127,7 @@ class Tree {
     RecMgr* recmgr_;
     Internal<Key>* root_;
     std::vector<std::atomic<bool>> initialized_;
-    std::vector<std::vector<Node<Key>*>> paths_;
+    std::vector<std::stack<Node<Key>*>*> paths_;
 
     bool valid_key(Key k) const {
         return k >= key_min_ && k <= key_max_ && k < inf1_;
@@ -138,15 +139,15 @@ class Tree {
     }
 
     SearchResult search(Key k, int tid) {
-        auto& path = paths_[tid];
-        path.clear();
+        auto& path = *paths_[tid];
+        while (!path.empty()) path.pop();
         Internal<Key>* gp = nullptr;
         Internal<Key>* p = nullptr;
         Update<Key> gpupdate{State::CLEAN, nullptr};
         Update<Key> pupdate{State::CLEAN, nullptr};
         Node<Key>* current = root_;
         while (auto* internal = dynamic_cast<Internal<Key>*>(current)) {
-            path.push_back(current);
+            path.push(current);
             gp = p;
             p = internal;
             gpupdate = pupdate;
@@ -155,7 +156,7 @@ class Tree {
                           ? p->left.load(std::memory_order_acquire)
                           : p->right.load(std::memory_order_acquire);
         }
-        path.push_back(current);
+        path.push(current);
         return {gp, p, static_cast<Leaf<Key, Value>*>(current), pupdate, gpupdate};
     }
 
@@ -256,12 +257,14 @@ class Tree {
     }
 
     void propagate(int tid) {
-        auto& path = paths_[tid];
+        auto& path = *paths_[tid];
         while (!path.empty()) {
-            Node<Key>* node = path.back();
-            path.pop_back();
-            if (auto* internal = dynamic_cast<Internal<Key>*>(node))
-                if (!refresh(tid, internal)) refresh(tid, internal);
+            Node<Key>* node = path.top();
+            path.pop();
+            if (node == nullptr) continue;
+            // The leaf is popped before propagate, so only internals remain.
+            auto* internal = static_cast<Internal<Key>*>(node);
+            if (!refresh(tid, internal)) refresh(tid, internal);
         }
     }
 
@@ -301,6 +304,7 @@ public:
           inf2_(std::numeric_limits<Key>::max()), no_value_(no_value),
           recmgr_(recmgr), root_(nullptr), initialized_(num_threads),
           paths_(num_threads) {
+        for (auto& path : paths_) path = new std::stack<Node<Key>*>();
         if (key_min > key_max || key_max >= inf1_)
             throw std::invalid_argument("BST key range overlaps sentinel");
         for (auto& initialized : initialized_)
@@ -318,6 +322,10 @@ public:
         slot->left_slot_ptr = left_v;
         slot->right_slot_ptr = right_v;
         root_->slot_ptr.store(slot, std::memory_order_relaxed);
+    }
+
+    ~Tree() {
+        for (auto* path : paths_) delete path;
     }
 
     void initThread(int tid) {
@@ -341,15 +349,15 @@ public:
         return leaf->key == k ? leaf->value : no_value_;
     }
 
-    bool insertIfAbsent(int tid, Key k, Value value) {
-        if (!valid_key(k)) return false;
+    Value insertIfAbsent(int tid, Key k, Value value) {
+        if (!valid_key(k)) return value;
         for (;;) {
             SearchResult found = search(k, tid);
-            auto& path = paths_[tid];
-            path.pop_back(); // exclude leaf from Propagate
+            auto& path = *paths_[tid];
+            path.pop(); // exclude leaf from Propagate
             if (found.leaf->key == k) {
                 propagate(tid);
-                return false;
+                return found.leaf->version->value;
             }
             if (found.pupdate.state != State::CLEAN) {
                 help(found.pupdate);
@@ -381,29 +389,29 @@ public:
                     expected, Update<Key>{State::IFLAG, op})) {
                 help_insert(op);
                 propagate(tid);
-                return true;
+                return no_value_;
             }
             help(expected);
-            delete op;
+            recmgr_->deallocate(tid, new_leaf);
+            recmgr_->deallocate(tid, sibling);
+            recmgr_->deallocate(tid, new_internal);
+            recmgr_->deallocate(tid, op);
             delete version;
-            delete new_internal;
-            delete sibling;
-            delete new_leaf;
             delete leaf_v;
         }
     }
 
-    std::pair<bool, Value> erase(int tid, Key k) {
-        if (!valid_key(k)) return {false, no_value_};
+    Value erase(int tid, Key k) {
+        if (!valid_key(k)) return no_value_;
         for (;;) {
             SearchResult found = search(k, tid);
-            auto& path = paths_[tid];
-            path.pop_back(); // leaf
+            auto& path = *paths_[tid];
+            path.pop(); // leaf
             if (found.leaf->key != k) {
                 propagate(tid);
-                return {false, no_value_};
+                return no_value_;
             }
-            path.pop_back(); // parent is removed by this delete
+            path.pop(); // parent is removed by this delete
             if (found.gpupdate.state != State::CLEAN) {
                 help(found.gpupdate);
                 continue;
@@ -420,11 +428,11 @@ public:
                 if (help_delete(op)) {
                     const Value removed = found.leaf->version->value;
                     propagate(tid);
-                    return {true, removed};
+                    return removed;
                 }
             } else {
                 help(expected);
-                delete op;
+                recmgr_->deallocate(tid, op);
             }
         }
     }

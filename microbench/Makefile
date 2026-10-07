@@ -26,6 +26,10 @@ ifeq ($(use_asserts), 0)
 	FLAGS += -DNDEBUG
 endif
 
+## The harness owns several fixed-size per-thread arrays. Set this to the
+## largest thread count that a binary will ever execute with.
+max_threads=32
+
 use_fopenmp=1
 ifeq ($(use_fopenmp), 1)
 	FLAGS += -fopenmp
@@ -89,7 +93,7 @@ ifeq ($(measure_prev), 1)
 endif
 
 # FLAGS += -march=native
-FLAGS += -DMAX_THREADS_POW2=32
+FLAGS += -DMAX_THREADS_POW2=$(max_threads)
 FLAGS += -DCPU_FREQ_GHZ=2.1 #$(shell ./experiments/get_cpu_ghz.sh)
 FLAGS += -DMEMORY_STATS=if\(1\) -DMEMORY_STATS2=if\(0\)
 FLAGS += -std=c++17 -g -mcx16 -gdwarf
@@ -203,6 +207,10 @@ DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_Ch
 DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_NoVC/adapter.h))
 DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_NoVC_Optimised/adapter.h))
 DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_Augmented_FatNodePtrs/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_Baseline/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_FatNode_ChildVC/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_Augmented/adapter.h))
+DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Lock_Free_Tree_NoAlloc/adapter.h))
 # DATA_STRUCTURES+=$(patsubst ../ds/%/adapter.h,%,$(wildcard ../ds/Trie_valid_Read*/adapter.h))
 
 

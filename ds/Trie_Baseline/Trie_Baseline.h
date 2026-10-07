@@ -77,7 +77,6 @@ class Trie_Baseline {
           KEY_MAX(key_max),
           N(N_),
           NO_VALUE(no_val) {
-        LOG_N = static_cast<int>(std::ceil(std::log2(static_cast<double>(N))));
         Leaf = new Node<Key, Value>*[N];
         for (size_t i = 0; i < N; ++i) Leaf[i] = nullptr;
         Root = build_tree(0, N - 1, nullptr);
@@ -102,8 +101,8 @@ class Trie_Baseline {
     }
 
     // ── find ─────────────────────────────────────────────────────────────────
-    // Walks the root Version's immutable left/right pointers using the bits of
-    // k, exactly as v1 always did.
+    // Walks the root Version's immutable left/right pointers, splitting the
+    // leaf range [l, r] exactly as build_tree does.
     Value find(const int tid, Key k) {
         if (k < KEY_MIN || k > KEY_MAX) return NO_VALUE;
         size_t idx = k - KEY_MIN;
@@ -111,10 +110,17 @@ class Trie_Baseline {
         const Version<Key, Value>* v =
             Root->version.load(std::memory_order_acquire);
 
-        for (int i = 0; i < LOG_N; ++i) {
+        size_t l = 0, r = N - 1;
+        while (l < r) {
             if (v == nullptr) return NO_VALUE;
-            int bit = (idx >> (LOG_N - 1 - i)) & 1;
-            v = (bit == 0) ? v->left : v->right;
+            size_t mid = l + (r - l) / 2;
+            if (idx <= mid) {
+                v = v->left;
+                r = mid;
+            } else {
+                v = v->right;
+                l = mid + 1;
+            }
         }
 
         return (v && v->sum > 0) ? Leaf[idx]->value : NO_VALUE;
@@ -178,14 +184,14 @@ class Trie_Baseline {
     // ── size ─────────────────────────────────────────────────────────────────
     // Matches v3 convention: returns the sum of present key values, not a
     // count.
-    int size(const int tid) {
-        int keysum = 0;
+    int64_t size(const int tid) {
+        int64_t keysum = 0;
         for (size_t i = 0; i < N; ++i) {
             Node<Key, Value>* leaf = Leaf[i];
             const Version<Key, Value>* v =
                 leaf->version.load(std::memory_order_acquire);
             if (v && v->sum == 1) {
-                keysum += (int)leaf->key;
+                keysum += (int64_t)leaf->key;
             }
         }
         return keysum;
@@ -221,7 +227,6 @@ class Trie_Baseline {
     const Key KEY_MIN;
     const Key KEY_MAX;
     const size_t N;
-    int LOG_N;
     Node<Key, Value>** Leaf;
     const Value NO_VALUE;
 

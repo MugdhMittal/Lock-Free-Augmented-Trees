@@ -13,7 +13,12 @@
 #include "errors.h"
 #include "record_manager.h"
 
-static const int ARRAY_SIZE = 1;  // slots per Version node
+// Override this at compile time with -DFATNODE_ARRAY_SIZE=<positive integer>.
+// Keeping 1 as the default preserves the original behaviour.
+#ifndef FATNODE_ARRAY_SIZE
+#define FATNODE_ARRAY_SIZE 1
+#endif
+static const int ARRAY_SIZE = FATNODE_ARRAY_SIZE;  // slots per Version node
 
 // Forward declarations — ArraySlot and Version mutually reference each other.
 template <typename Key, typename Value> struct ArraySlot;
@@ -133,7 +138,6 @@ class Trie_FatNode_ChildPtr {
           KEY_MAX(key_max),
           N(N_),
           NO_VALUE(no_val) {
-        LOG_N = static_cast<int>(std::ceil(std::log2(static_cast<double>(N))));
         Leaf = new Node<Key, Value>*[N];
         for (size_t i = 0; i < N; ++i) Leaf[i] = nullptr;
         Root = build_tree(0, N - 1, nullptr);
@@ -170,9 +174,16 @@ class Trie_FatNode_ChildPtr {
 
         // Pure pointer-chase descent — mirrors Trie_Baseline's v = v->left.
         // cur->left_slot_ptr / cur->right_slot_ptr ARE the child slots: just dereference.
-        for (int i = 0; i < LOG_N; ++i) {
-            int bit = (idx >> (LOG_N - 1 - i)) & 1;
-            cur = (bit == 0) ? cur->left_slot_ptr : cur->right_slot_ptr;
+        size_t l = 0, r = N - 1;
+        while (l < r) {
+            size_t mid = l + (r - l) / 2;
+            if (idx <= mid) {
+                cur = cur->left_slot_ptr;
+                r = mid;
+            } else {
+                cur = cur->right_slot_ptr;
+                l = mid + 1;
+            }
             if (cur == nullptr || cur->sum == 0) return NO_VALUE;
         }
 
@@ -309,8 +320,8 @@ class Trie_FatNode_ChildPtr {
         return result ? (Value)k : NO_VALUE;
     }
 
-    int size(const int tid) {
-        int keysum = 0;
+    int64_t size(const int tid) {
+        int64_t keysum = 0;
         int count = 0;
 
         for (size_t i = 0; i < N; ++i) {
@@ -320,7 +331,7 @@ class Trie_FatNode_ChildPtr {
             uint64_t snap = leaf->vcounter.load(std::memory_order_acquire);
             ArraySlot<Key, Value>* info = find_the_latest_version(v, snap);
             if (info != nullptr && info->sum == 1) {
-                keysum += (int)leaf->key;
+                keysum += (int64_t)leaf->key;
                 ++count;
             }
         }
@@ -357,7 +368,6 @@ class Trie_FatNode_ChildPtr {
     const Key KEY_MIN;
     const Key KEY_MAX;
     const size_t N;
-    int LOG_N;
     Node<Key, Value>** Leaf;
     const Value NO_VALUE;
 

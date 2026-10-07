@@ -53,14 +53,9 @@ public:
         return insertIfAbsent(tid, k, v);
     }
     V insertIfAbsent(int tid, const K& k, const V& v) {
-        // SetBench interprets NO_VALUE as an insertion; the pseudocode's
-        // Boolean false is represented by the non-reserved offered value.
-        return ds_->insertIfAbsent(tid, k, v) ? no_value_ : v;
+        return ds_->insertIfAbsent(tid, k, v);
     }
-    V erase(int tid, const K& k) {
-        auto result = ds_->erase(tid, k);
-        return result.first ? result.second : no_value_;
-    }
+    V erase(int tid, const K& k) { return ds_->erase(tid, k); }
     V find(int tid, const K& k) { return ds_->find(tid, k); }
     bool contains(int tid, const K& k) { return find(tid, k) != no_value_; }
     std::int64_t size(int tid) { return ds_->size(tid); }
